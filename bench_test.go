@@ -516,6 +516,79 @@ func BenchmarkUnmarshalByteSlice(b *testing.B) {
 }
 
 // ============================================================================
+// Low-Level Wire Format Benchmarks
+// ============================================================================
+
+func BenchmarkEncodeLengthPayload_Small(b *testing.B) {
+	dst := make([]byte, 16)
+	for i := 0; i < b.N; i++ {
+		encodeLengthPayload(dst, 100)
+	}
+}
+
+func BenchmarkEncodeLengthPayload_Medium(b *testing.B) {
+	dst := make([]byte, 16)
+	for i := 0; i < b.N; i++ {
+		encodeLengthPayload(dst, 10000)
+	}
+}
+
+func BenchmarkEncodeLengthPayload_Large(b *testing.B) {
+	dst := make([]byte, 16)
+	for i := 0; i < b.N; i++ {
+		encodeLengthPayload(dst, 1000000000)
+	}
+}
+
+func BenchmarkEncodeLengthField_Small(b *testing.B) {
+	dst := make([]byte, 16)
+	for i := 0; i < b.N; i++ {
+		encodeLengthField(dst, 50, false)
+	}
+}
+
+func BenchmarkEncodeLengthField_Medium(b *testing.B) {
+	dst := make([]byte, 16)
+	for i := 0; i < b.N; i++ {
+		encodeLengthField(dst, 5000, false)
+	}
+}
+
+func BenchmarkEncodeLengthField_Large(b *testing.B) {
+	dst := make([]byte, 16)
+	for i := 0; i < b.N; i++ {
+		encodeLengthField(dst, 500000000, false)
+	}
+}
+
+func BenchmarkDecodeLengthPayload_Small(b *testing.B) {
+	dst := make([]byte, 16)
+	encodeLengthPayload(dst, 100)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeLengthPayload(dst)
+	}
+}
+
+func BenchmarkDecodeLengthPayload_Medium(b *testing.B) {
+	dst := make([]byte, 16)
+	encodeLengthPayload(dst, 10000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeLengthPayload(dst)
+	}
+}
+
+func BenchmarkDecodeLengthPayload_Large(b *testing.B) {
+	dst := make([]byte, 16)
+	encodeLengthPayload(dst, 1000000000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeLengthPayload(dst)
+	}
+}
+
+// ============================================================================
 // JSON Comparison Benchmarks
 // These benchmarks compare BONJSON performance against encoding/json
 // ============================================================================

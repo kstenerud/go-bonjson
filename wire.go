@@ -32,25 +32,28 @@ func encodeLengthField(dst []byte, length uint64, continuation bool) int {
 // encodeLengthPayload encodes a length field payload into dst.
 // Returns the number of bytes written.
 func encodeLengthPayload(dst []byte, payload uint64) int {
-	// Determine the number of bytes needed
-	if payload == 0 {
-		dst[0] = 0x01 // count=1, payload=0
+	// Fast path for small payloads (very common case)
+	// Payload fits in 7 bits -> 1 byte encoding
+	if payload <= 0x7f {
+		dst[0] = byte((payload << 1) | 1)
 		return 1
 	}
 
-	// Find the highest bit position (1-based)
-	bitPos := 64 - bits.LeadingZeros64(payload)
-	// Calculate extra bytes needed (7 bits per byte)
-	extraBytes := (bitPos - 1) / 7
-	count := extraBytes + 1
+	// Calculate extra bytes needed: (significant_bits - 1) / 7
+	// Using bits.Len64 which compiles to a single CPU instruction on most architectures
+	sigBits := bits.Len64(payload)
+	extraBytes := (sigBits - 1) / 7
 
-	if count <= 8 {
-		// Shift payload left by 1 and set the count marker bit
-		encoded := (payload << uint(count)) | (1 << (count - 1))
-		// Write in little-endian order
-		for i := 0; i < count; i++ {
-			dst[i] = byte(encoded >> (i * 8))
-		}
+	if extraBytes < 8 {
+		// Encode: shift payload left by (extraBytes+1), then set the marker bit
+		// This is: (payload << (count)) | (1 << (count-1)) where count = extraBytes+1
+		count := extraBytes + 1
+		encoded := (payload << count) | (1 << extraBytes)
+
+		// Write as little-endian
+		// Use binary.LittleEndian.PutUint64 for efficiency - the compiler
+		// optimizes this to a single store on little-endian machines
+		binary.LittleEndian.PutUint64(dst, encoded)
 		return count
 	}
 
