@@ -696,6 +696,21 @@ func (e *encodeState) writeString(s string) {
 	}
 }
 
+// writeSmallInt writes a signed integer to the encoder (fast path helper)
+func (e *encodeState) writeSmallInt(v int64) {
+	n := encodeSignedInt(e.scratch[:], v)
+	e.Write(e.scratch[:n])
+}
+
+// writeFloat64 writes a float64 to the encoder (fast path helper)
+func (e *encodeState) writeFloat64(f float64) {
+	n, err := encodeNumber(e.scratch[:], f)
+	if err != nil {
+		e.error(err)
+	}
+	e.Write(e.scratch[:n])
+}
+
 func interfaceEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 	if v.IsNil() {
 		e.WriteByte(typeNull)
@@ -764,6 +779,36 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 		e.ptrSeen[ptr] = struct{}{}
 		defer delete(e.ptrSeen, ptr)
 	}
+
+	// Fast path for common map types to avoid reflect.MapRange overhead
+	switch m := v.Interface().(type) {
+	case map[string]string:
+		me.encodeMapStringString(e, m)
+		e.ptrLevel--
+		return
+	case map[string]any:
+		me.encodeMapStringAny(e, m, opts)
+		e.ptrLevel--
+		return
+	case map[string]int:
+		me.encodeMapStringInt(e, m)
+		e.ptrLevel--
+		return
+	case map[string]int64:
+		me.encodeMapStringInt64(e, m)
+		e.ptrLevel--
+		return
+	case map[string]float64:
+		me.encodeMapStringFloat64(e, m)
+		e.ptrLevel--
+		return
+	case map[string]bool:
+		me.encodeMapStringBool(e, m)
+		e.ptrLevel--
+		return
+	}
+
+	// Slow path: use reflect.MapRange for other map types
 	e.WriteByte(typeObjectStart)
 
 	// Extract and sort the keys.
@@ -788,6 +833,96 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 	}
 	e.WriteByte(typeContainerEnd)
 	e.ptrLevel--
+}
+
+// Fast path encoders for common map types
+
+func (me mapEncoder) encodeMapStringString(e *encodeState, m map[string]string) {
+	e.WriteByte(typeObjectStart)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		e.writeString(k)
+		e.writeString(m[k])
+	}
+	e.WriteByte(typeContainerEnd)
+}
+
+func (me mapEncoder) encodeMapStringAny(e *encodeState, m map[string]any, opts encOpts) {
+	e.WriteByte(typeObjectStart)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		e.writeString(k)
+		e.reflectValue(reflect.ValueOf(m[k]), opts)
+	}
+	e.WriteByte(typeContainerEnd)
+}
+
+func (me mapEncoder) encodeMapStringInt(e *encodeState, m map[string]int) {
+	e.WriteByte(typeObjectStart)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		e.writeString(k)
+		e.writeSmallInt(int64(m[k]))
+	}
+	e.WriteByte(typeContainerEnd)
+}
+
+func (me mapEncoder) encodeMapStringInt64(e *encodeState, m map[string]int64) {
+	e.WriteByte(typeObjectStart)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		e.writeString(k)
+		e.writeSmallInt(m[k])
+	}
+	e.WriteByte(typeContainerEnd)
+}
+
+func (me mapEncoder) encodeMapStringFloat64(e *encodeState, m map[string]float64) {
+	e.WriteByte(typeObjectStart)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		e.writeString(k)
+		e.writeFloat64(m[k])
+	}
+	e.WriteByte(typeContainerEnd)
+}
+
+func (me mapEncoder) encodeMapStringBool(e *encodeState, m map[string]bool) {
+	e.WriteByte(typeObjectStart)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		e.writeString(k)
+		if m[k] {
+			e.WriteByte(typeTrue)
+		} else {
+			e.WriteByte(typeFalse)
+		}
+	}
+	e.WriteByte(typeContainerEnd)
 }
 
 func newMapEncoder(t reflect.Type) encoderFunc {
