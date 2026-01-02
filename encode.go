@@ -432,11 +432,20 @@ func stringEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 
 // writeString writes a string to the encoder
 func (e *encodeState) writeString(s string) {
-	size := stringEncodedSize(s)
-	e.Grow(size)
-	buf := e.AvailableBuffer()
-	n := encodeString(buf[:size], s)
-	e.Write(buf[:n])
+	n := len(s)
+	if n <= maxShortStringLen {
+		// Short string: 1 byte type code + data
+		e.WriteByte(typeShortStringBase | byte(n))
+		e.WriteString(s)
+	} else {
+		// Long string: 1 byte type code + length field + data
+		// Calculate length field size once and encode to scratch buffer
+		payload := uint64(n) << 1 // continuation=false
+		e.scratch[0] = typeLongString
+		lfSize := encodeLengthPayload(e.scratch[1:], payload)
+		e.Write(e.scratch[:1+lfSize])
+		e.WriteString(s)
+	}
 }
 
 func interfaceEncoder(e *encodeState, v reflect.Value, opts encOpts) {
