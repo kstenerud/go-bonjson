@@ -15,8 +15,9 @@ import (
 
 // A field represents a single field found in a struct.
 type field struct {
-	name      string
-	nameBytes []byte // []byte(name)
+	name       string
+	nameBytes  []byte // []byte(name)
+	foldedName []byte // case-folded name for case-insensitive matching
 
 	tag       bool
 	index     []int
@@ -34,10 +35,58 @@ type field struct {
 }
 
 type structFields struct {
-	list         []field
-	byExactName  map[string]*field
-	byFoldedName map[string]*field
-	fieldCount   int // Number of usable fields for duplicate detection
+	list       []field
+	fieldCount int // Number of usable fields for duplicate detection
+}
+
+// findByExactName performs a linear search for a field with the exact name.
+// For typical structs with few fields, this is faster than map lookup due to
+// better cache locality and avoiding hash computation overhead.
+func (sf *structFields) findByExactName(name []byte) *field {
+	for i := range sf.list {
+		if bytesEqualString(name, sf.list[i].name) {
+			return &sf.list[i]
+		}
+	}
+	return nil
+}
+
+// findByFoldedName performs a case-insensitive search for a field.
+// Returns the first match found (for historical compatibility).
+func (sf *structFields) findByFoldedName(name []byte) *field {
+	foldedKey := foldName(name)
+	for i := range sf.list {
+		if bytesEqual(foldedKey, sf.list[i].foldedName) {
+			return &sf.list[i]
+		}
+	}
+	return nil
+}
+
+// bytesEqualString compares a byte slice to a string without allocation.
+func bytesEqualString(b []byte, s string) bool {
+	if len(b) != len(s) {
+		return false
+	}
+	for i := range b {
+		if b[i] != s[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// bytesEqual compares two byte slices.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type isZeroer interface {
@@ -249,18 +298,10 @@ func typeFields(t reflect.Type) structFields {
 	for i := range fields {
 		f := &fields[i]
 		f.encoder = typeEncoder(typeByIndex(t, f.index))
-		f.seenIndex = i // Assign unique index for duplicate detection
+		f.seenIndex = i                      // Assign unique index for duplicate detection
+		f.foldedName = foldName(f.nameBytes) // Pre-compute folded name
 	}
-	exactNameIndex := make(map[string]*field, len(fields))
-	foldedNameIndex := make(map[string]*field, len(fields))
-	for i, field := range fields {
-		exactNameIndex[field.name] = &fields[i]
-		// For historical reasons, first folded match takes precedence.
-		if _, ok := foldedNameIndex[string(foldName(field.nameBytes))]; !ok {
-			foldedNameIndex[string(foldName(field.nameBytes))] = &fields[i]
-		}
-	}
-	return structFields{fields, exactNameIndex, foldedNameIndex, len(fields)}
+	return structFields{list: fields, fieldCount: len(fields)}
 }
 
 // dominantField looks through the fields, all of which are known to

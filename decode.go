@@ -1054,7 +1054,7 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 		}
 
 		// Find field for key
-		subv := d.findStructField(v, fields, key, keyStart, seenFields)
+		subv := d.findStructField(v, &fields, key, keyStart, seenFields)
 
 		// Read value
 		if err := d.value(subv); err != nil {
@@ -1064,10 +1064,10 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 	return nil
 }
 
-func (d *decodeState) findStructField(v reflect.Value, fields structFields, key []byte, keyStart int, seenFields []bool) reflect.Value {
-	f := fields.byExactName[string(key)]
+func (d *decodeState) findStructField(v reflect.Value, fields *structFields, key []byte, keyStart int, seenFields []bool) reflect.Value {
+	f := fields.findByExactName(key)
 	if f == nil {
-		f = fields.byFoldedName[string(foldName(key))]
+		f = fields.findByFoldedName(key)
 	}
 
 	if f == nil {
