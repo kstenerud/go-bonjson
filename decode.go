@@ -203,6 +203,11 @@ func (d *decodeState) value(v reflect.Value) error {
 
 // decodeValue decodes a value given its type code
 func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
+	// If v is not valid, just skip the value
+	if !v.IsValid() {
+		return d.skipValue(tc)
+	}
+
 	// Check for unmarshaler first
 	u, ut, pv := indirect(v, tc == typeNull)
 	if u != nil {
@@ -217,11 +222,11 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 	switch {
 	case tc <= typeSmallIntMax:
 		// Small positive integer (0-100)
-		return d.storeInt(int64(tc), v, ut)
+		return d.storeInt(int64(tc), pv, ut)
 
 	case tc >= typeSmallNegIntMin:
 		// Small negative integer (-100 to -1)
-		return d.storeInt(int64(int8(tc)), v, ut)
+		return d.storeInt(int64(int8(tc)), pv, ut)
 
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		// Unsigned integer
@@ -234,7 +239,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 			val |= uint64(d.data[d.off+i]) << (i * 8)
 		}
 		d.off += n
-		return d.storeUint(val, v, ut)
+		return d.storeUint(val, pv, ut)
 
 	case tc >= typeSintBase && tc <= typeSintBase+7:
 		// Signed integer
@@ -256,7 +261,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 				signedVal = int64(val | mask)
 			}
 		}
-		return d.storeInt(signedVal, v, ut)
+		return d.storeInt(signedVal, pv, ut)
 
 	case tc == typeFloat16:
 		f, err := decodeFloat16(d.data[d.off:])
@@ -264,7 +269,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 			return err
 		}
 		d.off += 2
-		return d.storeFloat(f, v, ut)
+		return d.storeFloat(f, pv, ut)
 
 	case tc == typeFloat32:
 		f, err := decodeFloat32(d.data[d.off:])
@@ -272,7 +277,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 			return err
 		}
 		d.off += 4
-		return d.storeFloat(f, v, ut)
+		return d.storeFloat(f, pv, ut)
 
 	case tc == typeFloat64:
 		f, err := decodeFloat64(d.data[d.off:])
@@ -280,7 +285,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 			return err
 		}
 		d.off += 8
-		return d.storeFloat(f, v, ut)
+		return d.storeFloat(f, pv, ut)
 
 	case tc == typeBigNumber:
 		bn, n, err := decodeBigNumber(d.data[d.off:])
@@ -288,7 +293,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 			return err
 		}
 		d.off += n
-		return d.storeBigNumber(bn, v, ut)
+		return d.storeBigNumber(bn, pv, ut)
 
 	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
 		// Short string
@@ -298,7 +303,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 		}
 		s := d.data[d.off : d.off+length]
 		d.off += length
-		return d.storeString(s, v, ut)
+		return d.storeString(s, pv, ut)
 
 	case tc == typeLongString:
 		s, n, err := decodeLongString(d.data[d.off:], d.allowChunking, d.maxStringLength)
@@ -306,22 +311,22 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 			return err
 		}
 		d.off += n
-		return d.storeString(s, v, ut)
+		return d.storeString(s, pv, ut)
 
 	case tc == typeNull:
-		return d.storeNull(v, pv)
+		return d.storeNull(pv, v)
 
 	case tc == typeFalse:
-		return d.storeBool(false, v, ut)
+		return d.storeBool(false, pv, ut)
 
 	case tc == typeTrue:
-		return d.storeBool(true, v, ut)
+		return d.storeBool(true, pv, ut)
 
 	case tc == typeArrayStart:
-		return d.decodeArray(v, pv)
+		return d.decodeArray(pv, v)
 
 	case tc == typeObjectStart:
-		return d.decodeObject(v, pv)
+		return d.decodeObject(pv, v)
 
 	default:
 		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.off - 1)}

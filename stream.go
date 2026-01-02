@@ -12,10 +12,11 @@ import (
 
 // A Decoder reads and decodes BONJSON values from an input stream.
 type Decoder struct {
-	r   io.Reader
-	buf []byte
-	d   decodeState
-	err error
+	r         io.Reader
+	buf       []byte
+	d         decodeState
+	err       error
+	bytesRead int64 // total bytes read from reader
 
 	// Token streaming state
 	tokenState int
@@ -24,7 +25,10 @@ type Decoder struct {
 
 // NewDecoder returns a new decoder that reads from r.
 func NewDecoder(r io.Reader) *Decoder {
-	return &Decoder{r: r, buf: make([]byte, 0, 512)}
+	dec := &Decoder{r: r, buf: make([]byte, 0, 512)}
+	dec.d.maxStringLength = defaultMaxStringLength
+	dec.d.maxDepth = defaultMaxContainerDepth
+	return dec
 }
 
 // UseNumber causes the Decoder to unmarshal a number into an
@@ -126,6 +130,7 @@ func (dec *Decoder) readByte() (byte, error) {
 	if n == 0 {
 		return 0, io.EOF
 	}
+	dec.bytesRead++
 	return b[0], nil
 }
 
@@ -133,6 +138,9 @@ func (dec *Decoder) readBytes(n int) error {
 	start := len(dec.buf)
 	dec.buf = append(dec.buf, make([]byte, n)...)
 	_, err := io.ReadFull(dec.r, dec.buf[start:])
+	if err == nil {
+		dec.bytesRead += int64(n)
+	}
 	return err
 }
 
@@ -512,7 +520,7 @@ func (dec *Decoder) peekByte() (byte, error) {
 
 // InputOffset returns the input stream byte offset of the current decoder position.
 func (dec *Decoder) InputOffset() int64 {
-	return int64(len(dec.buf))
+	return dec.bytesRead
 }
 
 // Helper functions for number to string conversion

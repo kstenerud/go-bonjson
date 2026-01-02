@@ -1,0 +1,515 @@
+// Copyright 2024 Karl Stenerud. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package bonjson
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+// ============================================================================
+// Basic Type Benchmarks
+// ============================================================================
+
+func BenchmarkMarshalBool(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		Marshal(true)
+	}
+}
+
+func BenchmarkUnmarshalBool(b *testing.B) {
+	data, _ := Marshal(true)
+	var v bool
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkMarshalInt(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		Marshal(42)
+	}
+}
+
+func BenchmarkUnmarshalInt(b *testing.B) {
+	data, _ := Marshal(42)
+	var v int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkMarshalSmallInt(b *testing.B) {
+	// Small ints (-100 to 100) encode in single byte
+	for i := 0; i < b.N; i++ {
+		Marshal(50)
+	}
+}
+
+func BenchmarkMarshalLargeInt(b *testing.B) {
+	// Larger ints need multi-byte encoding
+	for i := 0; i < b.N; i++ {
+		Marshal(1000000)
+	}
+}
+
+func BenchmarkMarshalFloat64(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		Marshal(3.14159265358979)
+	}
+}
+
+func BenchmarkUnmarshalFloat64(b *testing.B) {
+	data, _ := Marshal(3.14159265358979)
+	var v float64
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+// ============================================================================
+// String Benchmarks
+// ============================================================================
+
+func BenchmarkMarshalShortString(b *testing.B) {
+	s := "hello" // 5 bytes, fits in short string
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkUnmarshalShortString(b *testing.B) {
+	data, _ := Marshal("hello")
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkMarshalLongString(b *testing.B) {
+	s := strings.Repeat("x", 100) // 100 bytes, long string
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkUnmarshalLongString(b *testing.B) {
+	data, _ := Marshal(strings.Repeat("x", 100))
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkMarshalVeryLongString(b *testing.B) {
+	s := strings.Repeat("x", 10000) // 10KB string
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+// ============================================================================
+// Struct Benchmarks
+// ============================================================================
+
+type SmallStruct struct {
+	X int
+	Y int
+	Z int
+}
+
+type MediumStruct struct {
+	Name    string
+	Age     int
+	Email   string
+	Active  bool
+	Score   float64
+}
+
+type LargeStruct struct {
+	ID          int64
+	Name        string
+	Email       string
+	Phone       string
+	Address     string
+	City        string
+	Country     string
+	PostalCode  string
+	Active      bool
+	Score       float64
+	Tags        []string
+	Metadata    map[string]string
+}
+
+func BenchmarkMarshalSmallStruct(b *testing.B) {
+	s := SmallStruct{X: 1, Y: 2, Z: 3}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkUnmarshalSmallStruct(b *testing.B) {
+	data, _ := Marshal(SmallStruct{X: 1, Y: 2, Z: 3})
+	var v SmallStruct
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkMarshalMediumStruct(b *testing.B) {
+	s := MediumStruct{
+		Name:   "John Doe",
+		Age:    30,
+		Email:  "john@example.com",
+		Active: true,
+		Score:  95.5,
+	}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkUnmarshalMediumStruct(b *testing.B) {
+	data, _ := Marshal(MediumStruct{
+		Name:   "John Doe",
+		Age:    30,
+		Email:  "john@example.com",
+		Active: true,
+		Score:  95.5,
+	})
+	var v MediumStruct
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkMarshalLargeStruct(b *testing.B) {
+	s := LargeStruct{
+		ID:         12345,
+		Name:       "John Doe",
+		Email:      "john.doe@example.com",
+		Phone:      "+1-555-123-4567",
+		Address:    "123 Main Street",
+		City:       "New York",
+		Country:    "USA",
+		PostalCode: "10001",
+		Active:     true,
+		Score:      98.7,
+		Tags:       []string{"premium", "verified", "active"},
+		Metadata:   map[string]string{"source": "web", "version": "2.0"},
+	}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkUnmarshalLargeStruct(b *testing.B) {
+	data, _ := Marshal(LargeStruct{
+		ID:         12345,
+		Name:       "John Doe",
+		Email:      "john.doe@example.com",
+		Phone:      "+1-555-123-4567",
+		Address:    "123 Main Street",
+		City:       "New York",
+		Country:    "USA",
+		PostalCode: "10001",
+		Active:     true,
+		Score:      98.7,
+		Tags:       []string{"premium", "verified", "active"},
+		Metadata:   map[string]string{"source": "web", "version": "2.0"},
+	})
+	var v LargeStruct
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+// ============================================================================
+// Slice/Array Benchmarks
+// ============================================================================
+
+func BenchmarkMarshalSmallSlice(b *testing.B) {
+	s := []int{1, 2, 3, 4, 5}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkUnmarshalSmallSlice(b *testing.B) {
+	data, _ := Marshal([]int{1, 2, 3, 4, 5})
+	var v []int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkMarshalLargeSlice(b *testing.B) {
+	s := make([]int, 1000)
+	for i := range s {
+		s[i] = i
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkUnmarshalLargeSlice(b *testing.B) {
+	s := make([]int, 1000)
+	for i := range s {
+		s[i] = i
+	}
+	data, _ := Marshal(s)
+	var v []int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+// ============================================================================
+// Map Benchmarks
+// ============================================================================
+
+func BenchmarkMarshalSmallMap(b *testing.B) {
+	m := map[string]int{"a": 1, "b": 2, "c": 3}
+	for i := 0; i < b.N; i++ {
+		Marshal(m)
+	}
+}
+
+func BenchmarkUnmarshalSmallMap(b *testing.B) {
+	data, _ := Marshal(map[string]int{"a": 1, "b": 2, "c": 3})
+	var v map[string]int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkMarshalLargeMap(b *testing.B) {
+	m := make(map[string]int, 100)
+	for i := 0; i < 100; i++ {
+		m[string(rune('a'+i%26))+string(rune('0'+i/26))] = i
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Marshal(m)
+	}
+}
+
+func BenchmarkUnmarshalLargeMap(b *testing.B) {
+	m := make(map[string]int, 100)
+	for i := 0; i < 100; i++ {
+		m[string(rune('a'+i%26))+string(rune('0'+i/26))] = i
+	}
+	data, _ := Marshal(m)
+	var v map[string]int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+// ============================================================================
+// Nested Structure Benchmarks
+// ============================================================================
+
+func BenchmarkMarshalNestedStruct(b *testing.B) {
+	type Inner struct {
+		Value int
+	}
+	type Outer struct {
+		Inner Inner
+		Name  string
+	}
+	s := Outer{Inner: Inner{Value: 42}, Name: "test"}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkMarshalDeeplyNested(b *testing.B) {
+	// Create 10 levels of nesting
+	var v any = 42
+	for i := 0; i < 10; i++ {
+		v = []any{v}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Marshal(v)
+	}
+}
+
+// ============================================================================
+// Stream Benchmarks
+// ============================================================================
+
+func BenchmarkEncoderEncode(b *testing.B) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	s := SmallStruct{X: 1, Y: 2, Z: 3}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		enc.Encode(s)
+	}
+}
+
+func BenchmarkDecoderDecode(b *testing.B) {
+	data, _ := Marshal(SmallStruct{X: 1, Y: 2, Z: 3})
+	var v SmallStruct
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.Decode(&v)
+	}
+}
+
+// ============================================================================
+// Allocation Benchmarks
+// ============================================================================
+
+func BenchmarkMarshalAllocations(b *testing.B) {
+	s := MediumStruct{
+		Name:   "John Doe",
+		Age:    30,
+		Email:  "john@example.com",
+		Active: true,
+		Score:  95.5,
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkUnmarshalAllocations(b *testing.B) {
+	data, _ := Marshal(MediumStruct{
+		Name:   "John Doe",
+		Age:    30,
+		Email:  "john@example.com",
+		Active: true,
+		Score:  95.5,
+	})
+	var v MediumStruct
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+// ============================================================================
+// Wire Format Benchmarks (Low-Level)
+// ============================================================================
+
+func BenchmarkEncodeLengthField(b *testing.B) {
+	var buf [16]byte
+	for i := 0; i < b.N; i++ {
+		encodeLengthField(buf[:], 12345, false)
+	}
+}
+
+func BenchmarkDecodeLengthField(b *testing.B) {
+	var buf [16]byte
+	n := encodeLengthField(buf[:], 12345, false)
+	data := buf[:n]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeLengthField(data)
+	}
+}
+
+func BenchmarkEncodeSignedInt(b *testing.B) {
+	var buf [16]byte
+	for i := 0; i < b.N; i++ {
+		encodeSignedInt(buf[:], 12345)
+	}
+}
+
+func BenchmarkDecodeInteger(b *testing.B) {
+	var buf [16]byte
+	n := encodeSignedInt(buf[:], 12345)
+	typeCode := buf[0]
+	data := buf[1:n]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeInteger(data, typeCode)
+	}
+}
+
+// ============================================================================
+// Comparison Benchmarks (with/without various features)
+// ============================================================================
+
+func BenchmarkMarshalWithOmitempty(b *testing.B) {
+	type WithOmitempty struct {
+		A int    `bonjson:"a,omitempty"`
+		B string `bonjson:"b,omitempty"`
+		C bool   `bonjson:"c,omitempty"`
+	}
+	s := WithOmitempty{A: 1} // B and C are zero, should be omitted
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkMarshalWithoutOmitempty(b *testing.B) {
+	type WithoutOmitempty struct {
+		A int    `bonjson:"a"`
+		B string `bonjson:"b"`
+		C bool   `bonjson:"c"`
+	}
+	s := WithoutOmitempty{A: 1}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+// ============================================================================
+// Valid Function Benchmark
+// ============================================================================
+
+func BenchmarkValid(b *testing.B) {
+	data, _ := Marshal(map[string]any{
+		"name":  "test",
+		"value": 42,
+		"tags":  []string{"a", "b", "c"},
+	})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Valid(data)
+	}
+}
+
+// ============================================================================
+// Byte Slice Benchmarks
+// ============================================================================
+
+func BenchmarkMarshalByteSlice(b *testing.B) {
+	data := bytes.Repeat([]byte{0xAB}, 1000)
+	for i := 0; i < b.N; i++ {
+		Marshal(data)
+	}
+}
+
+func BenchmarkUnmarshalByteSlice(b *testing.B) {
+	encoded, _ := Marshal(bytes.Repeat([]byte{0xAB}, 1000))
+	var v []byte
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(encoded, &v)
+	}
+}
