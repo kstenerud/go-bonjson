@@ -390,9 +390,23 @@ func indirect(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnm
 	v0 := v
 	haveAddr := false
 
-	if v.Kind() != reflect.Pointer && v.Type().Name() != "" && v.CanAddr() {
-		haveAddr = true
-		v = v.Addr()
+	// Check if we should take the address of v to check for pointer receiver methods.
+	// Only do this for named types (Name() != "") that are addressable.
+	// For common primitive kinds, we can skip the Name() check since they're always
+	// unnamed unless explicitly defined as a named type. However, since any type
+	// can be named (e.g., type MyInt int), we need to be careful.
+	// Optimization: skip Name() check for kinds that rarely have methods.
+	if v.Kind() != reflect.Pointer && v.CanAddr() {
+		// Fast path: for basic types without methods on either value or pointer receiver,
+		// we can skip the Name() check entirely.
+		t := v.Type()
+		if t.NumMethod() > 0 || reflect.PointerTo(t).NumMethod() > 0 {
+			// Type has methods, need to check if it's named to take address
+			if t.Name() != "" {
+				haveAddr = true
+				v = v.Addr()
+			}
+		}
 	}
 	for {
 		if v.Kind() == reflect.Interface && !v.IsNil() {
