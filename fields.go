@@ -27,12 +27,17 @@ type field struct {
 	quoted    bool
 
 	encoder encoderFunc
+
+	// seenIndex is a unique index (0-based) for this field within the struct,
+	// used for efficient duplicate key detection during decoding.
+	seenIndex int
 }
 
 type structFields struct {
 	list         []field
 	byExactName  map[string]*field
 	byFoldedName map[string]*field
+	fieldCount   int // Number of usable fields for duplicate detection
 }
 
 type isZeroer interface {
@@ -244,6 +249,7 @@ func typeFields(t reflect.Type) structFields {
 	for i := range fields {
 		f := &fields[i]
 		f.encoder = typeEncoder(typeByIndex(t, f.index))
+		f.seenIndex = i // Assign unique index for duplicate detection
 	}
 	exactNameIndex := make(map[string]*field, len(fields))
 	foldedNameIndex := make(map[string]*field, len(fields))
@@ -254,7 +260,7 @@ func typeFields(t reflect.Type) structFields {
 			foldedNameIndex[string(foldName(field.nameBytes))] = &fields[i]
 		}
 	}
-	return structFields{fields, exactNameIndex, foldedNameIndex}
+	return structFields{fields, exactNameIndex, foldedNameIndex, len(fields)}
 }
 
 // dominantField looks through the fields, all of which are known to

@@ -88,10 +88,15 @@ type decodeState struct {
 	maxDepth              int
 	currentDepth          int
 
-	// Stack of maps for duplicate key detection in nested objects.
+	// Stack of maps for duplicate key detection in nested maps.
 	// We reuse these maps to avoid allocations.
 	seenKeysStack []map[string]struct{}
 	seenKeysDepth int
+
+	// Stack of boolean slices for duplicate key detection in nested structs.
+	// Using field indices is more efficient than map lookups for structs.
+	seenFieldsStack [][]bool
+	seenFieldsDepth int
 
 	errorContext *errorContext
 }
@@ -118,11 +123,12 @@ func newDecodeState() *decodeState {
 	d.maxDepth = defaultMaxContainerDepth
 	d.currentDepth = 0
 	d.seenKeysDepth = 0
+	d.seenFieldsDepth = 0
 	return d
 }
 
 // pushSeenKeys returns a cleared map for duplicate key detection at the current nesting level.
-// The map is reused across calls to avoid allocations.
+// The map is reused across calls to avoid allocations. Used for maps only.
 func (d *decodeState) pushSeenKeys() map[string]struct{} {
 	if d.seenKeysDepth >= len(d.seenKeysStack) {
 		// Need to grow the stack
@@ -139,6 +145,31 @@ func (d *decodeState) pushSeenKeys() map[string]struct{} {
 // popSeenKeys releases the current seenKeys map back to the stack.
 func (d *decodeState) popSeenKeys() {
 	d.seenKeysDepth--
+}
+
+// pushSeenFields returns a cleared boolean slice for duplicate field detection in structs.
+// The slice is reused across calls to avoid allocations.
+func (d *decodeState) pushSeenFields(fieldCount int) []bool {
+	if d.seenFieldsDepth >= len(d.seenFieldsStack) {
+		// Need to grow the stack
+		d.seenFieldsStack = append(d.seenFieldsStack, make([]bool, fieldCount))
+	} else {
+		// Reuse existing slice if large enough, otherwise allocate new one
+		if cap(d.seenFieldsStack[d.seenFieldsDepth]) >= fieldCount {
+			d.seenFieldsStack[d.seenFieldsDepth] = d.seenFieldsStack[d.seenFieldsDepth][:fieldCount]
+			clear(d.seenFieldsStack[d.seenFieldsDepth])
+		} else {
+			d.seenFieldsStack[d.seenFieldsDepth] = make([]bool, fieldCount)
+		}
+	}
+	s := d.seenFieldsStack[d.seenFieldsDepth]
+	d.seenFieldsDepth++
+	return s
+}
+
+// popSeenFields releases the current seenFields slice back to the stack.
+func (d *decodeState) popSeenFields() {
+	d.seenFieldsDepth--
 }
 
 func (d *decodeState) init(data []byte) {
@@ -914,12 +945,13 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 		return d.skipContainer()
 	}
 
-	// Track keys for duplicate detection in structs only
-	// For maps, we check the map itself
-	var seenKeys map[string]struct{}
+	// Track duplicate keys
+	// For structs, use efficient boolean slice indexed by field index
+	// For maps, we still need the map for unknown keys
+	var seenFields []bool
 	if v.Kind() == reflect.Struct {
-		seenKeys = d.pushSeenKeys()
-		defer d.popSeenKeys()
+		seenFields = d.pushSeenFields(fields.fieldCount)
+		defer d.popSeenFields()
 	}
 	var mapElem reflect.Value
 
@@ -941,15 +973,6 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 			return err
 		}
 
-		// For structs, check duplicate using seenKeys
-		if seenKeys != nil {
-			normalizedKey := string(key)
-			if _, seen := seenKeys[normalizedKey]; seen {
-				return &DuplicateKeyError{Key: normalizedKey, Offset: int64(keyStart)}
-			}
-			seenKeys[normalizedKey] = struct{}{}
-		}
-
 		// Find field for key
 		var subv reflect.Value
 
@@ -967,6 +990,12 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 				f = fields.byFoldedName[string(foldName(key))]
 			}
 			if f != nil {
+				// Check for duplicate using field's seenIndex
+				if seenFields[f.seenIndex] {
+					return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
+				}
+				seenFields[f.seenIndex] = true
+
 				subv = v
 				for _, ind := range f.index {
 					if subv.Kind() == reflect.Pointer {
