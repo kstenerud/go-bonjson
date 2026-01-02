@@ -92,19 +92,42 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 		return payload, 9, nil
 	}
 
-	// Count trailing zeros + 1 gives us the count
+	// Count trailing zeros + 1 gives us the byte count
+	// bits.TrailingZeros8 compiles to a single CPU instruction on most architectures
 	count := bits.TrailingZeros8(header) + 1
 	if len(src) < count {
 		return 0, 0, &TruncatedDataError{Expected: count, Got: len(src), Offset: 0}
 	}
 
-	// Read count bytes as little-endian
-	var encoded uint64
-	for i := 0; i < count; i++ {
-		encoded |= uint64(src[i]) << (i * 8)
+	// Fast path: read bytes efficiently, then shift
+	// This avoids the byte-by-byte loop
+	switch count {
+	case 1:
+		payload = uint64(header) >> 1
+	case 2:
+		payload = uint64(binary.LittleEndian.Uint16(src)) >> 2
+	case 3:
+		// Build 3 bytes manually to avoid reading past buffer
+		payload = uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
+		payload >>= 3
+	case 4:
+		payload = uint64(binary.LittleEndian.Uint32(src)) >> 4
+	default:
+		// For 5-8 bytes, read as much as we safely can
+		if len(src) >= 8 {
+			// Can safely read 8 bytes
+			payload = binary.LittleEndian.Uint64(src) >> count
+		} else {
+			// Build up the value - we know we have at least 'count' bytes
+			// Read 4 bytes + remaining bytes
+			payload = uint64(binary.LittleEndian.Uint32(src))
+			for i := 4; i < count; i++ {
+				payload |= uint64(src[i]) << (i * 8)
+			}
+			payload >>= count
+		}
 	}
-	// Shift right by count bits to remove the count marker
-	payload = encoded >> count
+
 	return payload, count, nil
 }
 
