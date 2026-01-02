@@ -67,6 +67,22 @@ func Marshal(v any) ([]byte, error) {
 	return buf, nil
 }
 
+// AppendMarshal appends the BONJSON encoding of v to dst and returns the extended buffer.
+// This is more efficient than Marshal when the caller can provide a pre-allocated buffer,
+// as it avoids an allocation for the result slice.
+//
+// See Marshal for details on the encoding of Go values.
+func AppendMarshal(dst []byte, v any) ([]byte, error) {
+	e := newEncodeState()
+	defer encodeStatePool.Put(e)
+
+	err := e.marshal(v, encOpts{})
+	if err != nil {
+		return dst, err
+	}
+	return append(dst, e.Bytes()...), nil
+}
+
 // Marshaler is the interface implemented by types that
 // can marshal themselves into valid BONJSON.
 type Marshaler interface {

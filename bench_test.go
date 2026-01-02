@@ -21,6 +21,13 @@ func BenchmarkMarshalBool(b *testing.B) {
 	}
 }
 
+func BenchmarkAppendMarshalBool(b *testing.B) {
+	buf := make([]byte, 0, 16)
+	for i := 0; i < b.N; i++ {
+		buf, _ = AppendMarshal(buf[:0], true)
+	}
+}
+
 func BenchmarkUnmarshalBool(b *testing.B) {
 	data, _ := Marshal(true)
 	var v bool
@@ -128,26 +135,26 @@ type SmallStruct struct {
 }
 
 type MediumStruct struct {
-	Name    string
-	Age     int
-	Email   string
-	Active  bool
-	Score   float64
+	Name   string
+	Age    int
+	Email  string
+	Active bool
+	Score  float64
 }
 
 type LargeStruct struct {
-	ID          int64
-	Name        string
-	Email       string
-	Phone       string
-	Address     string
-	City        string
-	Country     string
-	PostalCode  string
-	Active      bool
-	Score       float64
-	Tags        []string
-	Metadata    map[string]string
+	ID         int64
+	Name       string
+	Email      string
+	Phone      string
+	Address    string
+	City       string
+	Country    string
+	PostalCode string
+	Active     bool
+	Score      float64
+	Tags       []string
+	Metadata   map[string]string
 }
 
 func BenchmarkMarshalSmallStruct(b *testing.B) {
