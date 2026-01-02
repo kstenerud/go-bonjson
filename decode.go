@@ -920,40 +920,120 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 		return nil
 	}
 
-	t := v.Type()
-	var fields structFields
-
 	switch v.Kind() {
 	case reflect.Map:
-		switch t.Key().Kind() {
-		case reflect.String,
-			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		default:
-			if !reflect.PointerTo(t.Key()).Implements(textUnmarshalerType) {
-				d.saveError(&UnmarshalTypeError{Value: "object", Type: t, Offset: int64(d.off)})
-				return d.skipContainer()
-			}
-		}
-		if v.IsNil() {
-			v.Set(reflect.MakeMap(t))
-		}
+		return d.decodeObjectToMap(v)
 	case reflect.Struct:
-		fields = cachedTypeFields(t)
+		return d.decodeObjectToStruct(v)
 	default:
-		d.saveError(&UnmarshalTypeError{Value: "object", Type: t, Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "object", Type: v.Type(), Offset: int64(d.off)})
 		return d.skipContainer()
 	}
+}
 
-	// Track duplicate keys
-	// For structs, use efficient boolean slice indexed by field index
-	// For maps, we still need the map for unknown keys
-	var seenFields []bool
-	if v.Kind() == reflect.Struct {
-		seenFields = d.pushSeenFields(fields.fieldCount)
-		defer d.popSeenFields()
+func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
+	t := v.Type()
+	kt := t.Key()
+
+	// Validate key type
+	switch kt.Kind() {
+	case reflect.String,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+	default:
+		if !reflect.PointerTo(kt).Implements(textUnmarshalerType) {
+			d.saveError(&UnmarshalTypeError{Value: "object", Type: t, Offset: int64(d.off)})
+			return d.skipContainer()
+		}
 	}
-	var mapElem reflect.Value
+
+	if v.IsNil() {
+		v.Set(reflect.MakeMap(t))
+	}
+
+	elemType := t.Elem()
+	mapElem := reflect.New(elemType).Elem()
+
+	for {
+		tc, err := d.peekByte()
+		if err != nil {
+			return err
+		}
+
+		if tc == typeContainerEnd {
+			d.off++
+			break
+		}
+
+		// Read key (must be a string)
+		keyStart := d.off
+		key, err := d.readString()
+		if err != nil {
+			return err
+		}
+
+		// Reset map element for reuse
+		mapElem.SetZero()
+
+		// Read value
+		if err := d.value(mapElem); err != nil {
+			return err
+		}
+
+		// Convert key to appropriate type and set in map
+		kv, err := d.convertMapKey(kt, key, keyStart)
+		if err != nil {
+			d.saveError(err)
+			continue
+		}
+
+		if kv.IsValid() {
+			// Check for duplicate key using the map itself
+			if v.MapIndex(kv).IsValid() {
+				return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
+			}
+			v.SetMapIndex(kv, mapElem)
+		}
+	}
+	return nil
+}
+
+func (d *decodeState) convertMapKey(kt reflect.Type, key []byte, keyStart int) (reflect.Value, error) {
+	switch kt.Kind() {
+	case reflect.String:
+		kv := reflect.New(kt).Elem()
+		kv.SetString(string(key))
+		return kv, nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n, err := strconv.ParseInt(string(key), 10, 64)
+		if err != nil || kt.OverflowInt(n) {
+			return reflect.Value{}, &UnmarshalTypeError{Value: "number " + string(key), Type: kt, Offset: int64(keyStart)}
+		}
+		kv := reflect.New(kt).Elem()
+		kv.SetInt(n)
+		return kv, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		n, err := strconv.ParseUint(string(key), 10, 64)
+		if err != nil || kt.OverflowUint(n) {
+			return reflect.Value{}, &UnmarshalTypeError{Value: "number " + string(key), Type: kt, Offset: int64(keyStart)}
+		}
+		kv := reflect.New(kt).Elem()
+		kv.SetUint(n)
+		return kv, nil
+	default:
+		// TextUnmarshaler
+		kv := reflect.New(kt)
+		if err := kv.Interface().(encoding.TextUnmarshaler).UnmarshalText(key); err != nil {
+			return reflect.Value{}, err
+		}
+		return kv.Elem(), nil
+	}
+}
+
+func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
+	fields := cachedTypeFields(v.Type())
+	seenFields := d.pushSeenFields(fields.fieldCount)
+	defer d.popSeenFields()
 
 	for {
 		tc, err := d.peekByte()
@@ -974,96 +1054,51 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 		}
 
 		// Find field for key
-		var subv reflect.Value
-
-		if v.Kind() == reflect.Map {
-			elemType := t.Elem()
-			if !mapElem.IsValid() {
-				mapElem = reflect.New(elemType).Elem()
-			} else {
-				mapElem.SetZero()
-			}
-			subv = mapElem
-		} else {
-			f := fields.byExactName[string(key)]
-			if f == nil {
-				f = fields.byFoldedName[string(foldName(key))]
-			}
-			if f != nil {
-				// Check for duplicate using field's seenIndex
-				if seenFields[f.seenIndex] {
-					return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
-				}
-				seenFields[f.seenIndex] = true
-
-				subv = v
-				for _, ind := range f.index {
-					if subv.Kind() == reflect.Pointer {
-						if subv.IsNil() {
-							if !subv.CanSet() {
-								d.saveError(fmt.Errorf("bonjson: cannot set embedded pointer to unexported struct: %v", subv.Type().Elem()))
-								subv = reflect.Value{}
-								break
-							}
-							subv.Set(reflect.New(subv.Type().Elem()))
-						}
-						subv = subv.Elem()
-					}
-					subv = subv.Field(ind)
-				}
-			} else if d.disallowUnknownFields {
-				d.saveError(fmt.Errorf("bonjson: unknown field %q", key))
-			}
-		}
+		subv := d.findStructField(v, fields, key, keyStart, seenFields)
 
 		// Read value
 		if err := d.value(subv); err != nil {
 			return err
 		}
-
-		// Write to map
-		if v.Kind() == reflect.Map {
-			kt := t.Key()
-			var kv reflect.Value
-			switch kt.Kind() {
-			case reflect.String:
-				kv = reflect.New(kt).Elem()
-				kv.SetString(string(key))
-			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-				n, err := strconv.ParseInt(string(key), 10, 64)
-				if err != nil || kt.OverflowInt(n) {
-					d.saveError(&UnmarshalTypeError{Value: "number " + string(key), Type: kt, Offset: int64(keyStart)})
-					continue
-				}
-				kv = reflect.New(kt).Elem()
-				kv.SetInt(n)
-			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-				n, err := strconv.ParseUint(string(key), 10, 64)
-				if err != nil || kt.OverflowUint(n) {
-					d.saveError(&UnmarshalTypeError{Value: "number " + string(key), Type: kt, Offset: int64(keyStart)})
-					continue
-				}
-				kv = reflect.New(kt).Elem()
-				kv.SetUint(n)
-			default:
-				// TextUnmarshaler
-				kv = reflect.New(kt)
-				if err := kv.Interface().(encoding.TextUnmarshaler).UnmarshalText(key); err != nil {
-					d.saveError(err)
-					continue
-				}
-				kv = kv.Elem()
-			}
-			if kv.IsValid() {
-				// Check for duplicate key using the map itself
-				if v.MapIndex(kv).IsValid() {
-					return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
-				}
-				v.SetMapIndex(kv, subv)
-			}
-		}
 	}
 	return nil
+}
+
+func (d *decodeState) findStructField(v reflect.Value, fields structFields, key []byte, keyStart int, seenFields []bool) reflect.Value {
+	f := fields.byExactName[string(key)]
+	if f == nil {
+		f = fields.byFoldedName[string(foldName(key))]
+	}
+
+	if f == nil {
+		if d.disallowUnknownFields {
+			d.saveError(fmt.Errorf("bonjson: unknown field %q", key))
+		}
+		return reflect.Value{}
+	}
+
+	// Check for duplicate using field's seenIndex
+	if seenFields[f.seenIndex] {
+		d.saveError(&DuplicateKeyError{Key: string(key), Offset: int64(keyStart)})
+		return reflect.Value{}
+	}
+	seenFields[f.seenIndex] = true
+
+	subv := v
+	for _, ind := range f.index {
+		if subv.Kind() == reflect.Pointer {
+			if subv.IsNil() {
+				if !subv.CanSet() {
+					d.saveError(fmt.Errorf("bonjson: cannot set embedded pointer to unexported struct: %v", subv.Type().Elem()))
+					return reflect.Value{}
+				}
+				subv.Set(reflect.New(subv.Type().Elem()))
+			}
+			subv = subv.Elem()
+		}
+		subv = subv.Field(ind)
+	}
+	return subv
 }
 
 // readString reads a string value from the input
