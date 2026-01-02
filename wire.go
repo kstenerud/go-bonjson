@@ -181,31 +181,25 @@ func encodeSignedInt(dst []byte, v int64) int {
 		return 1
 	}
 
-	// Determine the minimum bytes needed for signed representation
+	// Calculate required bytes using leading sign bits count
+	// For signed integers, we count leading redundant sign bits
+	// Use xor with sign-extended value to find significant bits
+	u := uint64(v)
+	signExtended := uint64(v >> 63) // All 1s if negative, all 0s if positive
+	effective := u ^ signExtended   // For negative: inverts bits; for positive: same
+
+	// bits.Len64 gives position of highest set bit (1-64), or 0 if value is 0
+	// We need ceiling division by 8, but also need at least 1 byte
 	var n int
-	switch {
-	case v >= -128 && v <= 127:
+	if effective == 0 {
 		n = 1
-	case v >= -32768 && v <= 32767:
-		n = 2
-	case v >= -8388608 && v <= 8388607:
-		n = 3
-	case v >= -2147483648 && v <= 2147483647:
-		n = 4
-	case v >= -549755813888 && v <= 549755813887:
-		n = 5
-	case v >= -140737488355328 && v <= 140737488355327:
-		n = 6
-	case v >= -36028797018963968 && v <= 36028797018963967:
-		n = 7
-	default:
-		n = 8
+	} else {
+		n = (bits.Len64(effective) + 7) / 8
 	}
 
 	dst[0] = typeSintBase | byte(n-1)
-	for i := 0; i < n; i++ {
-		dst[1+i] = byte(v >> (i * 8))
-	}
+	// Write as little-endian using single store
+	binary.LittleEndian.PutUint64(dst[1:], u)
 	return 1 + n
 }
 
@@ -218,31 +212,13 @@ func encodeUnsignedInt(dst []byte, v uint64) int {
 		return 1
 	}
 
-	// Determine the minimum bytes needed
-	var n int
-	switch {
-	case v <= 0xFF:
-		n = 1
-	case v <= 0xFFFF:
-		n = 2
-	case v <= 0xFFFFFF:
-		n = 3
-	case v <= 0xFFFFFFFF:
-		n = 4
-	case v <= 0xFFFFFFFFFF:
-		n = 5
-	case v <= 0xFFFFFFFFFFFF:
-		n = 6
-	case v <= 0xFFFFFFFFFFFFFF:
-		n = 7
-	default:
-		n = 8
-	}
+	// Calculate required bytes: (position of highest bit + 7) / 8
+	// bits.Len64 returns bit length (1-64), divide by 8 rounding up
+	n := (bits.Len64(v) + 7) / 8
 
 	dst[0] = typeUintBase | byte(n-1)
-	for i := 0; i < n; i++ {
-		dst[1+i] = byte(v >> (i * 8))
-	}
+	// Write as little-endian using single store
+	binary.LittleEndian.PutUint64(dst[1:], v)
 	return 1 + n
 }
 
@@ -264,8 +240,28 @@ func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint
 		if len(src) < n {
 			return 0, 0, 0, &TruncatedDataError{Expected: n, Got: len(src), Offset: 0}
 		}
-		for i := 0; i < n; i++ {
-			unsignedVal |= uint64(src[i]) << (i * 8)
+		// Read efficiently based on size
+		switch n {
+		case 1:
+			unsignedVal = uint64(src[0])
+		case 2:
+			unsignedVal = uint64(binary.LittleEndian.Uint16(src))
+		case 3:
+			unsignedVal = uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
+		case 4:
+			unsignedVal = uint64(binary.LittleEndian.Uint32(src))
+		default:
+			// For 5-8 bytes, read 8 and mask
+			if len(src) >= 8 {
+				unsignedVal = binary.LittleEndian.Uint64(src)
+				unsignedVal &= (uint64(1) << (n * 8)) - 1
+			} else {
+				// Not enough buffer for 8-byte read, build manually
+				unsignedVal = uint64(binary.LittleEndian.Uint32(src))
+				for i := 4; i < n; i++ {
+					unsignedVal |= uint64(src[i]) << (i * 8)
+				}
+			}
 		}
 		return int64(unsignedVal), unsignedVal, n, nil
 
@@ -275,20 +271,37 @@ func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint
 		if len(src) < n {
 			return 0, 0, 0, &TruncatedDataError{Expected: n, Got: len(src), Offset: 0}
 		}
-		for i := 0; i < n; i++ {
-			unsignedVal |= uint64(src[i]) << (i * 8)
-		}
-		// Sign extend
-		signedVal = int64(unsignedVal)
-		if n < 8 {
-			// Sign extend based on the highest bit of the n-byte value
-			signBit := uint64(1) << (n*8 - 1)
-			if unsignedVal&signBit != 0 {
-				// Negative number - extend sign bits
-				mask := ^uint64(0) << (n * 8)
-				signedVal = int64(unsignedVal | mask)
+		// Use sign fill trick from C: initialize with -1 if MSB is set (negative)
+		// This pre-fills upper bytes with 1s for sign extension
+		msb := src[n-1]
+		initVal := uint64(int8(msb) >> 7) // All 1s if negative, all 0s if positive
+
+		// Read efficiently based on size
+		switch n {
+		case 1:
+			unsignedVal = (initVal &^ 0xFF) | uint64(src[0])
+		case 2:
+			unsignedVal = (initVal &^ 0xFFFF) | uint64(binary.LittleEndian.Uint16(src))
+		case 3:
+			unsignedVal = (initVal &^ 0xFFFFFF) | uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
+		case 4:
+			unsignedVal = (initVal &^ 0xFFFFFFFF) | uint64(binary.LittleEndian.Uint32(src))
+		default:
+			// For 5-8 bytes
+			if len(src) >= 8 {
+				unsignedVal = binary.LittleEndian.Uint64(src)
+				if n < 8 {
+					mask := (uint64(1) << (n * 8)) - 1
+					unsignedVal = (initVal &^ mask) | (unsignedVal & mask)
+				}
+			} else {
+				unsignedVal = (initVal &^ 0xFFFFFFFF) | uint64(binary.LittleEndian.Uint32(src))
+				for i := 4; i < n; i++ {
+					unsignedVal = (unsignedVal &^ (uint64(0xFF) << (i * 8))) | (uint64(src[i]) << (i * 8))
+				}
 			}
 		}
+		signedVal = int64(unsignedVal)
 		return signedVal, unsignedVal, n, nil
 
 	default:

@@ -440,9 +440,115 @@ func BenchmarkEncodeSignedInt(b *testing.B) {
 	}
 }
 
+func BenchmarkEncodeSignedInt_Small(b *testing.B) {
+	var buf [16]byte
+	for i := 0; i < b.N; i++ {
+		encodeSignedInt(buf[:], 50) // fits in single byte
+	}
+}
+
+func BenchmarkEncodeSignedInt_Medium(b *testing.B) {
+	var buf [16]byte
+	for i := 0; i < b.N; i++ {
+		encodeSignedInt(buf[:], -10000) // needs 2 bytes
+	}
+}
+
+func BenchmarkEncodeSignedInt_Large(b *testing.B) {
+	var buf [16]byte
+	for i := 0; i < b.N; i++ {
+		encodeSignedInt(buf[:], -9223372036854775808) // min int64, needs 8 bytes
+	}
+}
+
+func BenchmarkEncodeUnsignedInt_Small(b *testing.B) {
+	var buf [16]byte
+	for i := 0; i < b.N; i++ {
+		encodeUnsignedInt(buf[:], 50) // fits in single byte
+	}
+}
+
+func BenchmarkEncodeUnsignedInt_Medium(b *testing.B) {
+	var buf [16]byte
+	for i := 0; i < b.N; i++ {
+		encodeUnsignedInt(buf[:], 10000) // needs 2 bytes
+	}
+}
+
+func BenchmarkEncodeUnsignedInt_Large(b *testing.B) {
+	var buf [16]byte
+	for i := 0; i < b.N; i++ {
+		encodeUnsignedInt(buf[:], 18446744073709551615) // max uint64, needs 8 bytes
+	}
+}
+
 func BenchmarkDecodeInteger(b *testing.B) {
 	var buf [16]byte
 	n := encodeSignedInt(buf[:], 12345)
+	typeCode := buf[0]
+	data := buf[1:n]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeInteger(data, typeCode)
+	}
+}
+
+func BenchmarkDecodeInteger_SmallPositive(b *testing.B) {
+	// Small positive integer: encoded as single byte type code
+	typeCode := byte(50)
+	data := []byte{}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeInteger(data, typeCode)
+	}
+}
+
+func BenchmarkDecodeInteger_SmallNegative(b *testing.B) {
+	// Small negative integer: encoded as single byte type code
+	typeCode := byte(0xCE) // -50 as unsigned byte
+	data := []byte{}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeInteger(data, typeCode)
+	}
+}
+
+func BenchmarkDecodeInteger_Signed2Bytes(b *testing.B) {
+	var buf [16]byte
+	n := encodeSignedInt(buf[:], -10000)
+	typeCode := buf[0]
+	data := buf[1:n]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeInteger(data, typeCode)
+	}
+}
+
+func BenchmarkDecodeInteger_Signed8Bytes(b *testing.B) {
+	var buf [16]byte
+	n := encodeSignedInt(buf[:], -9223372036854775808)
+	typeCode := buf[0]
+	data := buf[1:n]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeInteger(data, typeCode)
+	}
+}
+
+func BenchmarkDecodeInteger_Unsigned4Bytes(b *testing.B) {
+	var buf [16]byte
+	n := encodeUnsignedInt(buf[:], 1000000000)
+	typeCode := buf[0]
+	data := buf[1:n]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decodeInteger(data, typeCode)
+	}
+}
+
+func BenchmarkDecodeInteger_Unsigned8Bytes(b *testing.B) {
+	var buf [16]byte
+	n := encodeUnsignedInt(buf[:], 18446744073709551615)
 	typeCode := buf[0]
 	data := buf[1:n]
 	b.ResetTimer()
