@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -310,7 +311,9 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 			return err
 		}
 		d.off += n
-		return d.storeBigNumber(bn, pv, ut)
+		// For *big.Int and *big.Float, use the original value v to preserve type info
+		// since indirect() returns an invalid pv when TextUnmarshaler is found
+		return d.storeBigNumber(bn, v, pv, ut)
 
 	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
 		// Short string
@@ -554,7 +557,20 @@ func (d *decodeState) storeFloat(val float64, v reflect.Value, ut encoding.TextU
 	return nil
 }
 
-func (d *decodeState) storeBigNumber(bn *BigNumber, v reflect.Value, ut encoding.TextUnmarshaler) error {
+func (d *decodeState) storeBigNumber(bn *BigNumber, origV reflect.Value, pv reflect.Value, ut encoding.TextUnmarshaler) error {
+	// Check for *big.Int target first - preserve exact integer value
+	// Use origV since pv may be invalid when TextUnmarshaler is found
+	if origV.IsValid() && origV.Kind() == reflect.Pointer && origV.Type().Elem() == reflect.TypeFor[big.Int]() {
+		return d.storeBigNumberToBigInt(bn, origV)
+	}
+	// Check for *big.Float target - preserve arbitrary precision
+	if origV.IsValid() && origV.Kind() == reflect.Pointer && origV.Type().Elem() == reflect.TypeFor[big.Float]() {
+		return d.storeBigNumberToBigFloat(bn, origV)
+	}
+
+	// Use pv for generic handling
+	v := pv
+
 	// Convert BigNumber to string representation and parse
 	// This is a simplification - a full implementation would handle this more efficiently
 	if len(bn.Significand) == 0 {
@@ -590,6 +606,102 @@ func (d *decodeState) storeBigNumber(bn *BigNumber, v reflect.Value, ut encoding
 		f *= math.Pow10(int(bn.Exponent))
 	}
 	return d.storeFloat(f, v, ut)
+}
+
+// storeBigNumberToBigInt converts a BigNumber to a *big.Int with full precision.
+func (d *decodeState) storeBigNumberToBigInt(bn *BigNumber, v reflect.Value) error {
+	if len(bn.Significand) == 0 {
+		// Zero
+		if v.IsNil() {
+			v.Set(reflect.ValueOf(new(big.Int)))
+		}
+		v.Elem().Set(reflect.ValueOf(*big.NewInt(0)))
+		return nil
+	}
+
+	// Convert significand from little-endian to big.Int
+	// big.Int.SetBytes expects big-endian
+	bigEndian := make([]byte, len(bn.Significand))
+	for i, b := range bn.Significand {
+		bigEndian[len(bn.Significand)-1-i] = b
+	}
+
+	sigInt := new(big.Int).SetBytes(bigEndian)
+
+	// Apply exponent if any (multiply by 10^exponent)
+	if bn.Exponent != 0 {
+		if bn.Exponent > 0 {
+			// Multiply by 10^exponent
+			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(bn.Exponent)), nil)
+			sigInt.Mul(sigInt, multiplier)
+		} else {
+			// Divide by 10^(-exponent) - this may lose precision for non-integer results
+			divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-bn.Exponent)), nil)
+			sigInt.Div(sigInt, divisor)
+		}
+	}
+
+	// Apply sign
+	if bn.Negative {
+		sigInt.Neg(sigInt)
+	}
+
+	if v.IsNil() {
+		v.Set(reflect.ValueOf(new(big.Int)))
+	}
+	v.Elem().Set(reflect.ValueOf(*sigInt))
+	return nil
+}
+
+// storeBigNumberToBigFloat converts a BigNumber to a *big.Float with full precision.
+func (d *decodeState) storeBigNumberToBigFloat(bn *BigNumber, v reflect.Value) error {
+	if len(bn.Significand) == 0 {
+		// Zero
+		if v.IsNil() {
+			v.Set(reflect.ValueOf(new(big.Float)))
+		}
+		result := new(big.Float)
+		if bn.Negative {
+			result.Neg(result) // -0
+		}
+		v.Elem().Set(reflect.ValueOf(*result))
+		return nil
+	}
+
+	// Convert significand from little-endian to big.Int
+	bigEndian := make([]byte, len(bn.Significand))
+	for i, b := range bn.Significand {
+		bigEndian[len(bn.Significand)-1-i] = b
+	}
+
+	sigInt := new(big.Int).SetBytes(bigEndian)
+
+	// Convert to big.Float
+	result := new(big.Float).SetInt(sigInt)
+
+	// Apply exponent if any
+	if bn.Exponent != 0 {
+		if bn.Exponent > 0 {
+			// Multiply by 10^exponent
+			multiplier := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(bn.Exponent)), nil))
+			result.Mul(result, multiplier)
+		} else {
+			// Divide by 10^(-exponent)
+			divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-bn.Exponent)), nil))
+			result.Quo(result, divisor)
+		}
+	}
+
+	// Apply sign
+	if bn.Negative {
+		result.Neg(result)
+	}
+
+	if v.IsNil() {
+		v.Set(reflect.ValueOf(new(big.Float)))
+	}
+	v.Elem().Set(reflect.ValueOf(*result))
+	return nil
 }
 
 func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnmarshaler) error {

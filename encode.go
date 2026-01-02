@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"slices"
 	"strconv"
@@ -200,6 +201,8 @@ func typeEncoder(t reflect.Type) encoderFunc {
 var (
 	marshalerType     = reflect.TypeFor[Marshaler]()
 	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
+	bigIntType        = reflect.TypeFor[*big.Int]()
+	bigFloatType      = reflect.TypeFor[*big.Float]()
 )
 
 // newTypeEncoder constructs an encoderFunc for a type.
@@ -210,6 +213,13 @@ func newTypeEncoder(t reflect.Type, allowAddr bool) encoderFunc {
 	}
 	if t.Implements(marshalerType) {
 		return marshalerEncoder
+	}
+	// Check for big.Int and big.Float before TextMarshaler to use native BigNumber encoding
+	if t == bigIntType {
+		return bigIntEncoder
+	}
+	if t == bigFloatType {
+		return bigFloatEncoder
 	}
 	if t.Kind() != reflect.Pointer && allowAddr && reflect.PointerTo(t).Implements(textMarshalerType) {
 		return newCondAddrEncoder(addrTextMarshalerEncoder, newTypeEncoder(t, false))
@@ -313,6 +323,195 @@ func addrTextMarshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		e.error(&MarshalerError{v.Type(), err, "MarshalText"})
 	}
 	e.writeString(string(b))
+}
+
+// bigIntEncoder encodes *big.Int as a BONJSON BigNumber.
+func bigIntEncoder(e *encodeState, v reflect.Value, opts encOpts) {
+	if v.IsNil() {
+		e.WriteByte(typeNull)
+		return
+	}
+	bi := v.Interface().(*big.Int)
+	if opts.quoted {
+		e.writeString(bi.String())
+		return
+	}
+	bn := bigIntToBigNumber(bi)
+	if bn == nil {
+		// Number too large for BigNumber format, fall back to string encoding
+		e.writeString(bi.String())
+		return
+	}
+	n := encodeBigNumber(e.scratch[:], bn)
+	e.Write(e.scratch[:n])
+}
+
+// bigFloatEncoder encodes *big.Float as a BONJSON BigNumber.
+func bigFloatEncoder(e *encodeState, v reflect.Value, opts encOpts) {
+	if v.IsNil() {
+		e.WriteByte(typeNull)
+		return
+	}
+	bf := v.Interface().(*big.Float)
+	if opts.quoted {
+		e.writeString(bf.Text('g', -1))
+		return
+	}
+	// Check for special values (infinity)
+	if bf.IsInf() {
+		e.error(&UnsupportedValueError{v, "infinity"})
+		return
+	}
+	bn := bigFloatToBigNumber(bf)
+	n := encodeBigNumber(e.scratch[:], bn)
+	e.Write(e.scratch[:n])
+}
+
+// bigIntToBigNumber converts a *big.Int to a BigNumber.
+// Returns nil if the number is too large to represent exactly in BigNumber format.
+func bigIntToBigNumber(bi *big.Int) *BigNumber {
+	if bi.Sign() == 0 {
+		return &BigNumber{Negative: false}
+	}
+
+	negative := bi.Sign() < 0
+
+	// Get absolute value - use Abs on a new big.Int to avoid modifying original
+	absVal := new(big.Int).Abs(bi)
+	absBytes := absVal.Bytes() // big-endian
+
+	// If the number fits in 31 bytes, encode directly with exponent 0
+	if len(absBytes) <= 31 {
+		// Convert to little-endian
+		significand := make([]byte, len(absBytes))
+		for i, b := range absBytes {
+			significand[len(absBytes)-1-i] = b
+		}
+
+		return &BigNumber{
+			Significand: significand,
+			Exponent:    0,
+			Negative:    negative,
+		}
+	}
+
+	// For larger numbers, try to use decimal representation with trailing zeros removed
+	decStr := absVal.String()
+
+	// Remove trailing zeros and count them as exponent
+	origLen := len(decStr)
+	decStr = strings.TrimRight(decStr, "0")
+	exponent := int32(origLen - len(decStr))
+
+	// Parse the trimmed string back to a big.Int
+	sigInt := new(big.Int)
+	sigInt.SetString(decStr, 10)
+	sigBytes := sigInt.Bytes() // big-endian
+
+	// If still too large, return nil to indicate we should fall back to string encoding
+	if len(sigBytes) > 31 {
+		return nil
+	}
+
+	// Convert to little-endian
+	significand := make([]byte, len(sigBytes))
+	for i, b := range sigBytes {
+		significand[len(sigBytes)-1-i] = b
+	}
+
+	return &BigNumber{
+		Significand: significand,
+		Exponent:    exponent,
+		Negative:    negative,
+	}
+}
+
+// bigFloatToBigNumber converts a *big.Float to a BigNumber.
+// This converts the float to a decimal representation with significand × 10^exponent.
+func bigFloatToBigNumber(bf *big.Float) *BigNumber {
+	if bf.Sign() == 0 {
+		return &BigNumber{Negative: bf.Signbit()}
+	}
+
+	negative := bf.Sign() < 0
+
+	// Use Text to get a decimal string representation, then parse it
+	text := bf.Text('e', -1) // Use scientific notation
+
+	// Parse the scientific notation: [+-]d.dddde[+-]dd
+	var significandStr string
+	var exponent int32
+
+	// Find 'e' or 'E'
+	eIdx := -1
+	for i, c := range text {
+		if c == 'e' || c == 'E' {
+			eIdx = i
+			break
+		}
+	}
+
+	if eIdx >= 0 {
+		significandStr = text[:eIdx]
+		expStr := text[eIdx+1:]
+		exp, _ := strconv.ParseInt(expStr, 10, 32)
+		exponent = int32(exp)
+	} else {
+		significandStr = text
+		exponent = 0
+	}
+
+	// Remove sign from significand string
+	if len(significandStr) > 0 && (significandStr[0] == '-' || significandStr[0] == '+') {
+		significandStr = significandStr[1:]
+	}
+
+	// Remove decimal point and adjust exponent
+	dotIdx := -1
+	for i, c := range significandStr {
+		if c == '.' {
+			dotIdx = i
+			break
+		}
+	}
+
+	if dotIdx >= 0 {
+		// Number of digits after decimal point
+		fracDigits := len(significandStr) - dotIdx - 1
+		exponent -= int32(fracDigits)
+		significandStr = significandStr[:dotIdx] + significandStr[dotIdx+1:]
+	}
+
+	// Remove leading zeros from significand
+	significandStr = strings.TrimLeft(significandStr, "0")
+	if significandStr == "" {
+		return &BigNumber{Negative: negative}
+	}
+
+	// Remove trailing zeros and adjust exponent
+	origLen := len(significandStr)
+	significandStr = strings.TrimRight(significandStr, "0")
+	trailingZeros := origLen - len(significandStr)
+	exponent += int32(trailingZeros)
+
+	// Convert significand string to big.Int then to bytes
+	sigInt := new(big.Int)
+	sigInt.SetString(significandStr, 10)
+
+	// Get bytes in big-endian
+	sigBytes := sigInt.Bytes()
+
+	// Convert to little-endian
+	significand := make([]byte, len(sigBytes))
+	for i, b := range sigBytes {
+		significand[len(sigBytes)-1-i] = b
+	}
+
+	return &BigNumber{
+		Significand: significand,
+		Exponent:    exponent,
+		Negative:    negative,
+	}
 }
 
 func boolEncoder(e *encodeState, v reflect.Value, opts encOpts) {

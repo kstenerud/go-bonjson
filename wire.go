@@ -461,8 +461,6 @@ type BigNumber struct {
 }
 
 // encodeBigNumber encodes a big number.
-// TODO: Use this for native *big.Int and *big.Float encoding instead of TextMarshaler
-// to produce more compact, type-preserving output.
 // Returns the number of bytes written.
 func encodeBigNumber(dst []byte, bn *BigNumber) int {
 	dst[0] = typeBigNumber
