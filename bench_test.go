@@ -812,6 +812,26 @@ func BenchmarkComparison_MarshalLongString_JSON(b *testing.B) {
 	}
 }
 
+func BenchmarkComparison_UnmarshalLongString_BONJSON(b *testing.B) {
+	s := strings.Repeat("x", 1000)
+	data, _ := Marshal(s)
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalLongString_JSON(b *testing.B) {
+	s := strings.Repeat("x", 1000)
+	data, _ := json.Marshal(s)
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
 func BenchmarkComparison_MarshalStruct_BONJSON(b *testing.B) {
 	s := MediumStruct{
 		Name:   "John Doe",
