@@ -309,7 +309,14 @@ func decodeFloat16(src []byte) (float64, error) {
 	bf16 := binary.LittleEndian.Uint16(src)
 	// Expand bfloat16 to float32 by shifting to upper 16 bits
 	bits := uint32(bf16) << 16
-	return float64(math.Float32frombits(bits)), nil
+	f := math.Float32frombits(bits)
+	if math.IsNaN(float64(f)) {
+		return 0, &InvalidValueError{Value: "NaN", Offset: 0}
+	}
+	if math.IsInf(float64(f), 0) {
+		return 0, &InvalidValueError{Value: "Infinity", Offset: 0}
+	}
+	return float64(f), nil
 }
 
 // decodeFloat32 decodes a 32-bit float.
@@ -318,7 +325,14 @@ func decodeFloat32(src []byte) (float64, error) {
 		return 0, &TruncatedDataError{Expected: 4, Got: len(src), Offset: 0}
 	}
 	bits := binary.LittleEndian.Uint32(src)
-	return float64(math.Float32frombits(bits)), nil
+	f := math.Float32frombits(bits)
+	if math.IsNaN(float64(f)) {
+		return 0, &InvalidValueError{Value: "NaN", Offset: 0}
+	}
+	if math.IsInf(float64(f), 0) {
+		return 0, &InvalidValueError{Value: "Infinity", Offset: 0}
+	}
+	return float64(f), nil
 }
 
 // decodeFloat64 decodes a 64-bit float.
@@ -327,7 +341,14 @@ func decodeFloat64(src []byte) (float64, error) {
 		return 0, &TruncatedDataError{Expected: 8, Got: len(src), Offset: 0}
 	}
 	bits := binary.LittleEndian.Uint64(src)
-	return math.Float64frombits(bits), nil
+	f := math.Float64frombits(bits)
+	if math.IsNaN(f) {
+		return 0, &InvalidValueError{Value: "NaN", Offset: 0}
+	}
+	if math.IsInf(f, 0) {
+		return 0, &InvalidValueError{Value: "Infinity", Offset: 0}
+	}
+	return f, nil
 }
 
 // ============================================================================

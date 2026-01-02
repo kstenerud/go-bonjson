@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -91,27 +92,14 @@ type errorContext struct {
 	FieldStack []string
 }
 
-var decodeStatePool = &poolWrapper[decodeState]{}
-
-type poolWrapper[T any] struct {
-	pool []*T
-}
-
-func (p *poolWrapper[T]) Get() *T {
-	if len(p.pool) > 0 {
-		v := p.pool[len(p.pool)-1]
-		p.pool = p.pool[:len(p.pool)-1]
-		return v
-	}
-	return new(T)
-}
-
-func (p *poolWrapper[T]) Put(v *T) {
-	p.pool = append(p.pool, v)
+var decodeStatePool = sync.Pool{
+	New: func() any {
+		return new(decodeState)
+	},
 }
 
 func newDecodeState() *decodeState {
-	d := decodeStatePool.Get()
+	d := decodeStatePool.Get().(*decodeState)
 	d.savedError = nil
 	d.useNumber = false
 	d.disallowUnknownFields = false
@@ -670,7 +658,7 @@ func (d *decodeState) decodeArray(v reflect.Value, pv reflect.Value) error {
 	if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
 		ai := d.arrayInterface()
 		if d.savedError != nil {
-			return nil
+			return d.savedError
 		}
 		v.Set(reflect.ValueOf(ai))
 		return nil
@@ -749,7 +737,7 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 	if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
 		oi := d.objectInterface()
 		if d.savedError != nil {
-			return nil
+			return d.savedError
 		}
 		v.Set(reflect.ValueOf(oi))
 		return nil
