@@ -6,6 +6,7 @@ package bonjson
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -511,5 +512,376 @@ func BenchmarkUnmarshalByteSlice(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		Unmarshal(encoded, &v)
+	}
+}
+
+// ============================================================================
+// JSON Comparison Benchmarks
+// These benchmarks compare BONJSON performance against encoding/json
+// ============================================================================
+
+func BenchmarkComparison_MarshalInt_BONJSON(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		Marshal(42)
+	}
+}
+
+func BenchmarkComparison_MarshalInt_JSON(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		json.Marshal(42)
+	}
+}
+
+func BenchmarkComparison_UnmarshalInt_BONJSON(b *testing.B) {
+	data, _ := Marshal(42)
+	var v int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalInt_JSON(b *testing.B) {
+	data, _ := json.Marshal(42)
+	var v int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_MarshalFloat_BONJSON(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		Marshal(3.14159265358979)
+	}
+}
+
+func BenchmarkComparison_MarshalFloat_JSON(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		json.Marshal(3.14159265358979)
+	}
+}
+
+func BenchmarkComparison_UnmarshalFloat_BONJSON(b *testing.B) {
+	data, _ := Marshal(3.14159265358979)
+	var v float64
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalFloat_JSON(b *testing.B) {
+	data, _ := json.Marshal(3.14159265358979)
+	var v float64
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_MarshalString_BONJSON(b *testing.B) {
+	s := "hello world"
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkComparison_MarshalString_JSON(b *testing.B) {
+	s := "hello world"
+	for i := 0; i < b.N; i++ {
+		json.Marshal(s)
+	}
+}
+
+func BenchmarkComparison_UnmarshalString_BONJSON(b *testing.B) {
+	data, _ := Marshal("hello world")
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalString_JSON(b *testing.B) {
+	data, _ := json.Marshal("hello world")
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_MarshalLongString_BONJSON(b *testing.B) {
+	s := strings.Repeat("x", 1000)
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkComparison_MarshalLongString_JSON(b *testing.B) {
+	s := strings.Repeat("x", 1000)
+	for i := 0; i < b.N; i++ {
+		json.Marshal(s)
+	}
+}
+
+func BenchmarkComparison_MarshalStruct_BONJSON(b *testing.B) {
+	s := MediumStruct{
+		Name:   "John Doe",
+		Age:    30,
+		Email:  "john@example.com",
+		Active: true,
+		Score:  95.5,
+	}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkComparison_MarshalStruct_JSON(b *testing.B) {
+	s := MediumStruct{
+		Name:   "John Doe",
+		Age:    30,
+		Email:  "john@example.com",
+		Active: true,
+		Score:  95.5,
+	}
+	for i := 0; i < b.N; i++ {
+		json.Marshal(s)
+	}
+}
+
+func BenchmarkComparison_UnmarshalStruct_BONJSON(b *testing.B) {
+	data, _ := Marshal(MediumStruct{
+		Name:   "John Doe",
+		Age:    30,
+		Email:  "john@example.com",
+		Active: true,
+		Score:  95.5,
+	})
+	var v MediumStruct
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalStruct_JSON(b *testing.B) {
+	data, _ := json.Marshal(MediumStruct{
+		Name:   "John Doe",
+		Age:    30,
+		Email:  "john@example.com",
+		Active: true,
+		Score:  95.5,
+	})
+	var v MediumStruct
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_MarshalSlice_BONJSON(b *testing.B) {
+	s := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkComparison_MarshalSlice_JSON(b *testing.B) {
+	s := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	for i := 0; i < b.N; i++ {
+		json.Marshal(s)
+	}
+}
+
+func BenchmarkComparison_UnmarshalSlice_BONJSON(b *testing.B) {
+	data, _ := Marshal([]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+	var v []int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalSlice_JSON(b *testing.B) {
+	data, _ := json.Marshal([]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+	var v []int
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_MarshalMap_BONJSON(b *testing.B) {
+	m := map[string]any{
+		"name":    "test",
+		"value":   42,
+		"enabled": true,
+		"score":   3.14,
+		"tags":    []string{"a", "b", "c"},
+	}
+	for i := 0; i < b.N; i++ {
+		Marshal(m)
+	}
+}
+
+func BenchmarkComparison_MarshalMap_JSON(b *testing.B) {
+	m := map[string]any{
+		"name":    "test",
+		"value":   42,
+		"enabled": true,
+		"score":   3.14,
+		"tags":    []string{"a", "b", "c"},
+	}
+	for i := 0; i < b.N; i++ {
+		json.Marshal(m)
+	}
+}
+
+func BenchmarkComparison_UnmarshalMap_BONJSON(b *testing.B) {
+	data, _ := Marshal(map[string]any{
+		"name":    "test",
+		"value":   42,
+		"enabled": true,
+		"score":   3.14,
+		"tags":    []string{"a", "b", "c"},
+	})
+	var v map[string]any
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalMap_JSON(b *testing.B) {
+	data, _ := json.Marshal(map[string]any{
+		"name":    "test",
+		"value":   42,
+		"enabled": true,
+		"score":   3.14,
+		"tags":    []string{"a", "b", "c"},
+	})
+	var v map[string]any
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_MarshalLargeStruct_BONJSON(b *testing.B) {
+	s := LargeStruct{
+		ID:         12345,
+		Name:       "John Doe",
+		Email:      "john.doe@example.com",
+		Phone:      "+1-555-123-4567",
+		Address:    "123 Main Street",
+		City:       "New York",
+		Country:    "USA",
+		PostalCode: "10001",
+		Active:     true,
+		Score:      98.7,
+		Tags:       []string{"premium", "verified", "active"},
+		Metadata:   map[string]string{"source": "web", "version": "2.0"},
+	}
+	for i := 0; i < b.N; i++ {
+		Marshal(s)
+	}
+}
+
+func BenchmarkComparison_MarshalLargeStruct_JSON(b *testing.B) {
+	s := LargeStruct{
+		ID:         12345,
+		Name:       "John Doe",
+		Email:      "john.doe@example.com",
+		Phone:      "+1-555-123-4567",
+		Address:    "123 Main Street",
+		City:       "New York",
+		Country:    "USA",
+		PostalCode: "10001",
+		Active:     true,
+		Score:      98.7,
+		Tags:       []string{"premium", "verified", "active"},
+		Metadata:   map[string]string{"source": "web", "version": "2.0"},
+	}
+	for i := 0; i < b.N; i++ {
+		json.Marshal(s)
+	}
+}
+
+func BenchmarkComparison_UnmarshalLargeStruct_BONJSON(b *testing.B) {
+	data, _ := Marshal(LargeStruct{
+		ID:         12345,
+		Name:       "John Doe",
+		Email:      "john.doe@example.com",
+		Phone:      "+1-555-123-4567",
+		Address:    "123 Main Street",
+		City:       "New York",
+		Country:    "USA",
+		PostalCode: "10001",
+		Active:     true,
+		Score:      98.7,
+		Tags:       []string{"premium", "verified", "active"},
+		Metadata:   map[string]string{"source": "web", "version": "2.0"},
+	})
+	var v LargeStruct
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalLargeStruct_JSON(b *testing.B) {
+	data, _ := json.Marshal(LargeStruct{
+		ID:         12345,
+		Name:       "John Doe",
+		Email:      "john.doe@example.com",
+		Phone:      "+1-555-123-4567",
+		Address:    "123 Main Street",
+		City:       "New York",
+		Country:    "USA",
+		PostalCode: "10001",
+		Active:     true,
+		Score:      98.7,
+		Tags:       []string{"premium", "verified", "active"},
+		Metadata:   map[string]string{"source": "web", "version": "2.0"},
+	})
+	var v LargeStruct
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
+// ============================================================================
+// Data Size Comparison
+// Shows the encoded size difference between BONJSON and JSON
+// ============================================================================
+
+func BenchmarkComparison_EncodedSize(b *testing.B) {
+	testCases := []struct {
+		name string
+		data any
+	}{
+		{"int_small", 42},
+		{"int_large", 1000000},
+		{"float", 3.14159265358979},
+		{"string_short", "hello"},
+		{"string_long", strings.Repeat("x", 100)},
+		{"bool", true},
+		{"slice_int", []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+		{"struct_medium", MediumStruct{Name: "John Doe", Age: 30, Email: "john@example.com", Active: true, Score: 95.5}},
+		{"map_mixed", map[string]any{"name": "test", "value": 42, "enabled": true}},
+	}
+
+	for _, tc := range testCases {
+		bonjsonData, _ := Marshal(tc.data)
+		jsonData, _ := json.Marshal(tc.data)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportMetric(float64(len(bonjsonData)), "bonjson_bytes")
+			b.ReportMetric(float64(len(jsonData)), "json_bytes")
+			b.ReportMetric(float64(len(bonjsonData))/float64(len(jsonData))*100, "ratio_%")
+		})
 	}
 }
