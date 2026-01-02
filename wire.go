@@ -248,7 +248,11 @@ func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint
 		case 2:
 			unsignedVal = uint64(binary.LittleEndian.Uint16(src))
 		case 3:
-			unsignedVal = uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
+			if len(src) >= 4 {
+				unsignedVal = uint64(binary.LittleEndian.Uint32(src)) & 0xFFFFFF
+			} else {
+				unsignedVal = uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
+			}
 		case 4:
 			unsignedVal = uint64(binary.LittleEndian.Uint32(src))
 		default:
@@ -284,7 +288,11 @@ func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint
 		case 2:
 			unsignedVal = (initVal &^ 0xFFFF) | uint64(binary.LittleEndian.Uint16(src))
 		case 3:
-			unsignedVal = (initVal &^ 0xFFFFFF) | uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
+			if len(src) >= 4 {
+				unsignedVal = (initVal &^ 0xFFFFFF) | (uint64(binary.LittleEndian.Uint32(src)) & 0xFFFFFF)
+			} else {
+				unsignedVal = (initVal &^ 0xFFFFFF) | uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
+			}
 		case 4:
 			unsignedVal = (initVal &^ 0xFFFFFFFF) | uint64(binary.LittleEndian.Uint32(src))
 		default:
