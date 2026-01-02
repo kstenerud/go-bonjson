@@ -5,6 +5,7 @@
 package bonjson
 
 import (
+	"bytes"
 	"encoding"
 	"encoding/base64"
 	"fmt"
@@ -588,12 +589,10 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 		return &InvalidUTF8Error{Offset: int64(d.off - len(s))}
 	}
 
-	// Check for NUL
+	// Check for NUL - bytes.IndexByte uses SIMD-optimized assembly
 	if !d.allowNUL {
-		for i, b := range s {
-			if b == 0 {
-				return &NullInStringError{Offset: int64(d.off - len(s) + i)}
-			}
+		if i := bytes.IndexByte(s, 0); i >= 0 {
+			return &NullInStringError{Offset: int64(d.off - len(s) + i)}
 		}
 	}
 

@@ -423,11 +423,9 @@ func stringEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 	if !utf8.ValidString(s) {
 		e.error(&InvalidUTF8Error{Offset: 0})
 	}
-	// Check for NUL characters - disallowed by default
-	for i := 0; i < len(s); i++ {
-		if s[i] == 0 {
-			e.error(&NullInStringError{Offset: int64(i)})
-		}
+	// Check for NUL characters - strings.IndexByte uses SIMD-optimized assembly
+	if i := strings.IndexByte(s, 0); i >= 0 {
+		e.error(&NullInStringError{Offset: int64(i)})
 	}
 	e.writeString(s)
 }

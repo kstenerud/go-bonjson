@@ -5,6 +5,7 @@
 package bonjson
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"math/bits"
@@ -502,10 +503,9 @@ func validateString(s []byte, allowNUL bool) error {
 		return &InvalidUTF8Error{Offset: 0}
 	}
 	if !allowNUL {
-		for i, b := range s {
-			if b == 0 {
-				return &NullInStringError{Offset: int64(i)}
-			}
+		// bytes.IndexByte uses SIMD-optimized assembly
+		if i := bytes.IndexByte(s, 0); i >= 0 {
+			return &NullInStringError{Offset: int64(i)}
 		}
 	}
 	return nil
