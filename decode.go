@@ -768,18 +768,19 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 // validateString performs combined UTF-8 validation and NUL check in a single pass.
 // This is more efficient than calling utf8.Valid and bytes.IndexByte separately,
 // especially for ASCII strings which are very common.
+// The NUL check is deferred to the end since it's an error condition (never hot).
 func (d *decodeState) validateString(s []byte) error {
 	checkNUL := !d.allowNUL
 	baseOff := d.off - len(s)
+	hasZero := false
 
 	for i := 0; i < len(s); {
 		b := s[i]
 
 		// Fast path for ASCII (most common case)
 		if b < utf8.RuneSelf {
-			if checkNUL && b == 0 {
-				return &NullInStringError{Offset: int64(baseOff + i)}
-			}
+			// Defer NUL check to end of function using OR (b==0 is rare)
+			hasZero = hasZero || b == 0
 			i++
 			continue
 		}
@@ -791,6 +792,15 @@ func (d *decodeState) validateString(s []byte) error {
 			return &InvalidUTF8Error{Offset: int64(baseOff + i)}
 		}
 		i += size
+	}
+
+	// Deferred NUL check (error path, never hot)
+	if checkNUL && hasZero {
+		for i, b := range s {
+			if b == 0 {
+				return &NullInStringError{Offset: int64(baseOff + i)}
+			}
+		}
 	}
 	return nil
 }
