@@ -5,7 +5,6 @@
 package bonjson
 
 import (
-	"bytes"
 	"encoding"
 	"encoding/base64"
 	"encoding/binary"
@@ -88,11 +87,6 @@ type decodeState struct {
 	maxDepth              int
 	currentDepth          int
 
-	// Stack of maps for duplicate key detection in nested maps.
-	// We reuse these maps to avoid allocations.
-	seenKeysStack []map[string]struct{}
-	seenKeysDepth int
-
 	// Stack of boolean slices for duplicate key detection in nested structs.
 	// Using field indices is more efficient than map lookups for structs.
 	seenFieldsStack [][]bool
@@ -122,29 +116,8 @@ func newDecodeState() *decodeState {
 	d.maxStringLength = defaultMaxStringLength
 	d.maxDepth = defaultMaxContainerDepth
 	d.currentDepth = 0
-	d.seenKeysDepth = 0
 	d.seenFieldsDepth = 0
 	return d
-}
-
-// pushSeenKeys returns a cleared map for duplicate key detection at the current nesting level.
-// The map is reused across calls to avoid allocations. Used for maps only.
-func (d *decodeState) pushSeenKeys() map[string]struct{} {
-	if d.seenKeysDepth >= len(d.seenKeysStack) {
-		// Need to grow the stack
-		d.seenKeysStack = append(d.seenKeysStack, make(map[string]struct{}))
-	} else {
-		// Reuse existing map, just clear it
-		clear(d.seenKeysStack[d.seenKeysDepth])
-	}
-	m := d.seenKeysStack[d.seenKeysDepth]
-	d.seenKeysDepth++
-	return m
-}
-
-// popSeenKeys releases the current seenKeys map back to the stack.
-func (d *decodeState) popSeenKeys() {
-	d.seenKeysDepth--
 }
 
 // pushSeenFields returns a cleared boolean slice for duplicate field detection in structs.
@@ -750,16 +723,10 @@ func (d *decodeState) storeBigNumberToBigFloat(bn *BigNumber, v reflect.Value) e
 }
 
 func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnmarshaler) error {
-	// Validate UTF-8
-	if !utf8.Valid(s) {
-		return &InvalidUTF8Error{Offset: int64(d.off - len(s))}
-	}
-
-	// Check for NUL - bytes.IndexByte uses SIMD-optimized assembly
-	if !d.allowNUL {
-		if i := bytes.IndexByte(s, 0); i >= 0 {
-			return &NullInStringError{Offset: int64(d.off - len(s) + i)}
-		}
+	// Combined UTF-8 validation and NUL check in a single pass
+	// This is more efficient than calling utf8.Valid and bytes.IndexByte separately
+	if err := d.validateString(s); err != nil {
+		return err
 	}
 
 	if ut != nil {
@@ -794,6 +761,36 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.off)})
 	default:
 		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.off)})
+	}
+	return nil
+}
+
+// validateString performs combined UTF-8 validation and NUL check in a single pass.
+// This is more efficient than calling utf8.Valid and bytes.IndexByte separately,
+// especially for ASCII strings which are very common.
+func (d *decodeState) validateString(s []byte) error {
+	checkNUL := !d.allowNUL
+	baseOff := d.off - len(s)
+
+	for i := 0; i < len(s); {
+		b := s[i]
+
+		// Fast path for ASCII (most common case)
+		if b < utf8.RuneSelf {
+			if checkNUL && b == 0 {
+				return &NullInStringError{Offset: int64(baseOff + i)}
+			}
+			i++
+			continue
+		}
+
+		// Multi-byte UTF-8 sequence
+		_, size := utf8.DecodeRune(s[i:])
+		if size == 1 {
+			// Invalid UTF-8 (DecodeRune returns RuneError with size 1)
+			return &InvalidUTF8Error{Offset: int64(baseOff + i)}
+		}
+		i += size
 	}
 	return nil
 }
@@ -1130,15 +1127,9 @@ func (d *decodeState) readString() ([]byte, error) {
 		}
 		s := d.data[d.off : d.off+length]
 		d.off += length
-		// Validate UTF-8
-		if !utf8.Valid(s) {
-			return nil, &InvalidUTF8Error{Offset: int64(d.off - length)}
-		}
-		// Check for NUL - bytes.IndexByte uses SIMD-optimized assembly
-		if !d.allowNUL {
-			if i := bytes.IndexByte(s, 0); i >= 0 {
-				return nil, &NullInStringError{Offset: int64(d.off - length + i)}
-			}
+		// Combined UTF-8 and NUL validation
+		if err := d.validateString(s); err != nil {
+			return nil, err
 		}
 		return s, nil
 
@@ -1148,11 +1139,9 @@ func (d *decodeState) readString() ([]byte, error) {
 			return nil, err
 		}
 		d.off += n
-		// Check for NUL - bytes.IndexByte uses SIMD-optimized assembly
-		if !d.allowNUL {
-			if i := bytes.IndexByte(s, 0); i >= 0 {
-				return nil, &NullInStringError{Offset: int64(d.off - n + i)}
-			}
+		// Combined UTF-8 and NUL validation
+		if err := d.validateString(s); err != nil {
+			return nil, err
 		}
 		return s, nil
 
