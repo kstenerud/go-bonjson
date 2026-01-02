@@ -5,7 +5,6 @@
 package bonjson
 
 import (
-	"bytes"
 	"encoding/binary"
 	"math"
 	"math/bits"
@@ -132,46 +131,9 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 	return payload, count, nil
 }
 
-// lengthFieldSize returns the number of bytes needed to encode a length field.
-func lengthFieldSize(length uint64, continuation bool) int {
-	payload := length << 1
-	if continuation {
-		payload |= 1
-	}
-	return lengthPayloadSize(payload)
-}
-
-// lengthPayloadSize returns the number of bytes needed to encode a payload.
-func lengthPayloadSize(payload uint64) int {
-	if payload == 0 {
-		return 1
-	}
-	bitPos := 64 - bits.LeadingZeros64(payload)
-	extraBytes := (bitPos - 1) / 7
-	count := extraBytes + 1
-	if count > 8 {
-		return 9
-	}
-	return count
-}
-
 // ============================================================================
 // Integer Encoding/Decoding
 // ============================================================================
-
-// encodeSmallInt encodes a small integer (-100 to 100) as a single byte.
-// Returns true if successful, false if out of range.
-func encodeSmallInt(dst []byte, v int64) bool {
-	if v >= 0 && v <= 100 {
-		dst[0] = byte(v)
-		return true
-	}
-	if v >= -100 && v < 0 {
-		dst[0] = byte(int8(v))
-		return true
-	}
-	return false
-}
 
 // encodeSignedInt encodes a signed integer using the minimum bytes needed.
 // Returns the number of bytes written (1 for type code + n for value).
@@ -432,24 +394,6 @@ func encodeString(dst []byte, s string) int {
 	return encodeLongString(dst, s)
 }
 
-// stringEncodedSize returns the number of bytes needed to encode a string.
-func stringEncodedSize(s string) int {
-	n := len(s)
-	if n <= maxShortStringLen {
-		return 1 + n // type code + data
-	}
-	return 1 + lengthFieldSize(uint64(n), false) + n // type code + length field + data
-}
-
-// decodeShortString decodes a short string.
-// Returns the string bytes and bytes consumed (excluding type code).
-func decodeShortString(src []byte, length int) ([]byte, int, error) {
-	if len(src) < length {
-		return nil, 0, &TruncatedDataError{Expected: length, Got: len(src), Offset: 0}
-	}
-	return src[:length], length, nil
-}
-
 // decodeLongString decodes a long string (potentially chunked).
 // Returns the string bytes, bytes consumed, and any error.
 // If allowChunking is false, returns ChunkingError if chunking is detected.
@@ -505,20 +449,6 @@ func decodeLongString(src []byte, allowChunking bool, maxLength int64) ([]byte, 
 	return result, offset, nil
 }
 
-// validateString validates a string according to BONJSON security rules.
-func validateString(s []byte, allowNUL bool) error {
-	if !utf8.Valid(s) {
-		return &InvalidUTF8Error{Offset: 0}
-	}
-	if !allowNUL {
-		// bytes.IndexByte uses SIMD-optimized assembly
-		if i := bytes.IndexByte(s, 0); i >= 0 {
-			return &NullInStringError{Offset: int64(i)}
-		}
-	}
-	return nil
-}
-
 // ============================================================================
 // Big Number Encoding/Decoding
 // ============================================================================
@@ -531,6 +461,8 @@ type BigNumber struct {
 }
 
 // encodeBigNumber encodes a big number.
+// TODO: Use this for native *big.Int and *big.Float encoding instead of TextMarshaler
+// to produce more compact, type-preserving output.
 // Returns the number of bytes written.
 func encodeBigNumber(dst []byte, bn *BigNumber) int {
 	dst[0] = typeBigNumber
@@ -643,27 +575,7 @@ func decodeBigNumber(src []byte) (*BigNumber, int, error) {
 }
 
 // ============================================================================
-// Container Types
-// ============================================================================
-
-// Container markers - these are simple single-byte values
-func encodeArrayStart(dst []byte) int {
-	dst[0] = typeArrayStart
-	return 1
-}
-
-func encodeObjectStart(dst []byte) int {
-	dst[0] = typeObjectStart
-	return 1
-}
-
-func encodeContainerEnd(dst []byte) int {
-	dst[0] = typeContainerEnd
-	return 1
-}
-
-// ============================================================================
-// Boolean and Null
+// Boolean Encoding
 // ============================================================================
 
 func encodeBool(dst []byte, v bool) int {
@@ -672,11 +584,6 @@ func encodeBool(dst []byte, v bool) int {
 	} else {
 		dst[0] = typeFalse
 	}
-	return 1
-}
-
-func encodeNull(dst []byte) int {
-	dst[0] = typeNull
 	return 1
 }
 
