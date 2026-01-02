@@ -169,6 +169,45 @@ type encoderFunc func(e *encodeState, v reflect.Value, opts encOpts)
 
 var encoderCache sync.Map // map[reflect.Type]encoderFunc
 
+// Pre-cached encoders for exact primitive types indexed by Kind.
+// Only used when the type exactly matches the built-in type (no custom types).
+var primitiveEncoders = [...]encoderFunc{
+	reflect.Bool:    boolEncoder,
+	reflect.Int:     intEncoder,
+	reflect.Int8:    intEncoder,
+	reflect.Int16:   intEncoder,
+	reflect.Int32:   intEncoder,
+	reflect.Int64:   intEncoder,
+	reflect.Uint:    uintEncoder,
+	reflect.Uint8:   uintEncoder,
+	reflect.Uint16:  uintEncoder,
+	reflect.Uint32:  uintEncoder,
+	reflect.Uint64:  uintEncoder,
+	reflect.Uintptr: uintEncoder,
+	reflect.Float32: float32Encoder,
+	reflect.Float64: float64Encoder,
+	reflect.String:  stringEncoder,
+}
+
+// primitiveTypes maps Kind to the canonical primitive type for fast comparison.
+var primitiveTypes = [...]reflect.Type{
+	reflect.Bool:    reflect.TypeFor[bool](),
+	reflect.Int:     reflect.TypeFor[int](),
+	reflect.Int8:    reflect.TypeFor[int8](),
+	reflect.Int16:   reflect.TypeFor[int16](),
+	reflect.Int32:   reflect.TypeFor[int32](),
+	reflect.Int64:   reflect.TypeFor[int64](),
+	reflect.Uint:    reflect.TypeFor[uint](),
+	reflect.Uint8:   reflect.TypeFor[uint8](),
+	reflect.Uint16:  reflect.TypeFor[uint16](),
+	reflect.Uint32:  reflect.TypeFor[uint32](),
+	reflect.Uint64:  reflect.TypeFor[uint64](),
+	reflect.Uintptr: reflect.TypeFor[uintptr](),
+	reflect.Float32: reflect.TypeFor[float32](),
+	reflect.Float64: reflect.TypeFor[float64](),
+	reflect.String:  reflect.TypeFor[string](),
+}
+
 func valueEncoder(v reflect.Value) encoderFunc {
 	if !v.IsValid() {
 		return invalidValueEncoder
@@ -177,6 +216,16 @@ func valueEncoder(v reflect.Value) encoderFunc {
 }
 
 func typeEncoder(t reflect.Type) encoderFunc {
+	// Fast path for exact primitive types - avoids sync.Map lookup.
+	// Check Kind first (cheap int comparison), then verify exact type match.
+	k := t.Kind()
+	if k <= reflect.String {
+		if enc := primitiveEncoders[k]; enc != nil && t == primitiveTypes[k] {
+			return enc
+		}
+	}
+
+	// Slow path for other types - use cache
 	if fi, ok := encoderCache.Load(t); ok {
 		return fi.(encoderFunc)
 	}
