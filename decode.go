@@ -72,8 +72,8 @@ func (n Number) Int64() (int64, error) {
 // decodeState represents the state while decoding a BONJSON value.
 type decodeState struct {
 	data   []byte
-	off    int   // next read offset in data
-	opcode byte  // last read type code
+	off    int  // next read offset in data
+	opcode byte // last read type code
 
 	savedError            error
 	useNumber             bool
@@ -83,6 +83,11 @@ type decodeState struct {
 	maxStringLength       int64
 	maxDepth              int
 	currentDepth          int
+
+	// Stack of maps for duplicate key detection in nested objects.
+	// We reuse these maps to avoid allocations.
+	seenKeysStack []map[string]struct{}
+	seenKeysDepth int
 
 	errorContext *errorContext
 }
@@ -108,7 +113,28 @@ func newDecodeState() *decodeState {
 	d.maxStringLength = defaultMaxStringLength
 	d.maxDepth = defaultMaxContainerDepth
 	d.currentDepth = 0
+	d.seenKeysDepth = 0
 	return d
+}
+
+// pushSeenKeys returns a cleared map for duplicate key detection at the current nesting level.
+// The map is reused across calls to avoid allocations.
+func (d *decodeState) pushSeenKeys() map[string]struct{} {
+	if d.seenKeysDepth >= len(d.seenKeysStack) {
+		// Need to grow the stack
+		d.seenKeysStack = append(d.seenKeysStack, make(map[string]struct{}))
+	} else {
+		// Reuse existing map, just clear it
+		clear(d.seenKeysStack[d.seenKeysDepth])
+	}
+	m := d.seenKeysStack[d.seenKeysDepth]
+	d.seenKeysDepth++
+	return m
+}
+
+// popSeenKeys releases the current seenKeys map back to the stack.
+func (d *decodeState) popSeenKeys() {
+	d.seenKeysDepth--
 }
 
 func (d *decodeState) init(data []byte) {
@@ -768,8 +794,13 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 		return d.skipContainer()
 	}
 
-	// Track keys for duplicate detection
-	seenKeys := make(map[string]struct{})
+	// Track keys for duplicate detection in structs only
+	// For maps, we check the map itself
+	var seenKeys map[string]struct{}
+	if v.Kind() == reflect.Struct {
+		seenKeys = d.pushSeenKeys()
+		defer d.popSeenKeys()
+	}
 	var mapElem reflect.Value
 
 	for {
@@ -790,12 +821,14 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 			return err
 		}
 
-		// Check for duplicate key (normalized)
-		normalizedKey := string(key)
-		if _, seen := seenKeys[normalizedKey]; seen {
-			return &DuplicateKeyError{Key: normalizedKey, Offset: int64(keyStart)}
+		// For structs, check duplicate using seenKeys
+		if seenKeys != nil {
+			normalizedKey := string(key)
+			if _, seen := seenKeys[normalizedKey]; seen {
+				return &DuplicateKeyError{Key: normalizedKey, Offset: int64(keyStart)}
+			}
+			seenKeys[normalizedKey] = struct{}{}
 		}
-		seenKeys[normalizedKey] = struct{}{}
 
 		// Find field for key
 		var subv reflect.Value
@@ -873,6 +906,10 @@ func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
 				kv = kv.Elem()
 			}
 			if kv.IsValid() {
+				// Check for duplicate key using the map itself
+				if v.MapIndex(kv).IsValid() {
+					return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
+				}
 				v.SetMapIndex(kv, subv)
 			}
 		}
@@ -1047,7 +1084,6 @@ func (d *decodeState) arrayInterface() []any {
 // objectInterface decodes an object into map[string]any
 func (d *decodeState) objectInterface() map[string]any {
 	m := make(map[string]any)
-	seenKeys := make(map[string]struct{})
 
 	for {
 		tc, err := d.peekByte()
@@ -1068,11 +1104,11 @@ func (d *decodeState) objectInterface() map[string]any {
 		}
 
 		keyStr := string(key)
-		if _, seen := seenKeys[keyStr]; seen {
+		// Check for duplicate key using the map itself
+		if _, exists := m[keyStr]; exists {
 			d.saveError(&DuplicateKeyError{Key: keyStr, Offset: int64(keyStart)})
 			return m
 		}
-		seenKeys[keyStr] = struct{}{}
 
 		var val any
 		ev := reflect.ValueOf(&val).Elem()
