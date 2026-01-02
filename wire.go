@@ -552,10 +552,10 @@ func encodeBigNumber(dst []byte, bn *BigNumber) int {
 
 	offset := 2
 
-	// Write exponent bytes
-	for i := 0; i < expLen; i++ {
-		dst[offset] = byte(exp >> (i * 8))
-		offset++
+	// Write exponent bytes using binary.LittleEndian for efficiency
+	if expLen > 0 {
+		binary.LittleEndian.PutUint32(dst[offset:], uint32(exp))
+		offset += expLen
 	}
 
 	// Write significand bytes
@@ -603,12 +603,12 @@ func decodeBigNumber(src []byte) (*BigNumber, int, error) {
 		if offset+expLen > len(src) {
 			return nil, 0, &TruncatedDataError{Expected: expLen, Got: len(src) - offset, Offset: int64(offset)}
 		}
-		var expVal int64
-		for i := 0; i < expLen; i++ {
-			expVal |= int64(src[offset+i]) << (i * 8)
-		}
-		// Sign extend
-		if expLen < 8 {
+		// Read bytes into a 4-byte buffer (zero-extended)
+		var buf [4]byte
+		copy(buf[:], src[offset:offset+expLen])
+		expVal := int64(binary.LittleEndian.Uint32(buf[:]))
+		// Sign extend based on actual byte length
+		if expLen < 4 {
 			signBit := int64(1) << (expLen*8 - 1)
 			if expVal&signBit != 0 {
 				mask := ^int64(0) << (expLen * 8)

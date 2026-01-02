@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"encoding"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -560,10 +562,22 @@ func (d *decodeState) storeBigNumber(bn *BigNumber, v reflect.Value, ut encoding
 		return d.storeInt(0, v, ut)
 	}
 
-	// Build the significand value
+	// Build the significand value using binary.LittleEndian for efficiency
 	var sig uint64
-	for i := len(bn.Significand) - 1; i >= 0; i-- {
-		sig = sig*256 + uint64(bn.Significand[i])
+	switch len(bn.Significand) {
+	case 1:
+		sig = uint64(bn.Significand[0])
+	case 2:
+		sig = uint64(binary.LittleEndian.Uint16(bn.Significand))
+	case 3:
+		sig = uint64(bn.Significand[0]) | uint64(bn.Significand[1])<<8 | uint64(bn.Significand[2])<<16
+	case 4:
+		sig = uint64(binary.LittleEndian.Uint32(bn.Significand))
+	default:
+		// For 5-8 bytes, read as uint64 (padded with zeros)
+		var buf [8]byte
+		copy(buf[:], bn.Significand)
+		sig = binary.LittleEndian.Uint64(buf[:])
 	}
 
 	// For now, convert to float64 (a proper implementation would handle arbitrary precision)
@@ -572,13 +586,8 @@ func (d *decodeState) storeBigNumber(bn *BigNumber, v reflect.Value, ut encoding
 		f = -f
 	}
 	if bn.Exponent != 0 {
-		// Apply base-10 exponent
-		for i := int32(0); i < bn.Exponent; i++ {
-			f *= 10
-		}
-		for i := int32(0); i > bn.Exponent; i-- {
-			f /= 10
-		}
+		// Apply base-10 exponent using math.Pow10 (much faster than loop)
+		f *= math.Pow10(int(bn.Exponent))
 	}
 	return d.storeFloat(f, v, ut)
 }
@@ -935,11 +944,10 @@ func (d *decodeState) readString() ([]byte, error) {
 		if !utf8.Valid(s) {
 			return nil, &InvalidUTF8Error{Offset: int64(d.off - length)}
 		}
+		// Check for NUL - bytes.IndexByte uses SIMD-optimized assembly
 		if !d.allowNUL {
-			for i, b := range s {
-				if b == 0 {
-					return nil, &NullInStringError{Offset: int64(d.off - length + i)}
-				}
+			if i := bytes.IndexByte(s, 0); i >= 0 {
+				return nil, &NullInStringError{Offset: int64(d.off - length + i)}
 			}
 		}
 		return s, nil
@@ -950,11 +958,10 @@ func (d *decodeState) readString() ([]byte, error) {
 			return nil, err
 		}
 		d.off += n
+		// Check for NUL - bytes.IndexByte uses SIMD-optimized assembly
 		if !d.allowNUL {
-			for i, b := range s {
-				if b == 0 {
-					return nil, &NullInStringError{Offset: int64(d.off - n + i)}
-				}
+			if i := bytes.IndexByte(s, 0); i >= 0 {
+				return nil, &NullInStringError{Offset: int64(d.off - n + i)}
 			}
 		}
 		return s, nil
