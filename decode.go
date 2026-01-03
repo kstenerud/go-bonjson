@@ -773,9 +773,11 @@ func (d *decodeState) validateString(s []byte) error {
 	baseOff := d.off - len(s)
 
 	// Use SIMD-optimized bytes.IndexByte for fast NUL detection upfront
-	var zeroIdx int = -1
 	if !d.allowNUL {
-		zeroIdx = bytes.IndexByte(s, 0)
+		zeroIdx := bytes.IndexByte(s, 0)
+		if zeroIdx >= 0 {
+			return &NullInStringError{Offset: int64(baseOff + zeroIdx)}
+		}
 	}
 
 	for i := 0; i < len(s); {
@@ -796,10 +798,6 @@ func (d *decodeState) validateString(s []byte) error {
 		i += size
 	}
 
-	// Return NUL error if found (zeroIdx is already computed)
-	if zeroIdx >= 0 {
-		return &NullInStringError{Offset: int64(baseOff + zeroIdx)}
-	}
 	return nil
 }
 
