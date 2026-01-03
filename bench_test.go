@@ -117,6 +117,24 @@ func BenchmarkUnmarshalLongString(b *testing.B) {
 	}
 }
 
+// Unicode string with mix of 1, 2, 3, and 4-byte UTF-8 sequences
+var unicodeTestString = strings.Repeat("Hello世界🌍Ñoël", 10) // ~200 bytes with complex UTF-8
+
+func BenchmarkMarshalUnicodeString(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		Marshal(unicodeTestString)
+	}
+}
+
+func BenchmarkUnmarshalUnicodeString(b *testing.B) {
+	data, _ := Marshal(unicodeTestString)
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
 func BenchmarkMarshalVeryLongString(b *testing.B) {
 	s := strings.Repeat("x", 10000) // 10KB string
 	for i := 0; i < b.N; i++ {
@@ -825,6 +843,36 @@ func BenchmarkComparison_UnmarshalLongString_BONJSON(b *testing.B) {
 func BenchmarkComparison_UnmarshalLongString_JSON(b *testing.B) {
 	s := strings.Repeat("x", 1000)
 	data, _ := json.Marshal(s)
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		json.Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_MarshalUnicodeString_BONJSON(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		Marshal(unicodeTestString)
+	}
+}
+
+func BenchmarkComparison_MarshalUnicodeString_JSON(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		json.Marshal(unicodeTestString)
+	}
+}
+
+func BenchmarkComparison_UnmarshalUnicodeString_BONJSON(b *testing.B) {
+	data, _ := Marshal(unicodeTestString)
+	var v string
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Unmarshal(data, &v)
+	}
+}
+
+func BenchmarkComparison_UnmarshalUnicodeString_JSON(b *testing.B) {
+	data, _ := json.Marshal(unicodeTestString)
 	var v string
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
