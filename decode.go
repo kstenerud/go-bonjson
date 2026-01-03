@@ -905,8 +905,10 @@ func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
 	}
 	defer d.exitContainer()
 
+	vKind := v.Kind()
+
 	// Handle interface{}
-	if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
+	if vKind == reflect.Interface && v.NumMethod() == 0 {
 		oi := d.objectInterface()
 		if d.savedError != nil {
 			return d.savedError
@@ -915,7 +917,7 @@ func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
 		return nil
 	}
 
-	switch v.Kind() {
+	switch vKind {
 	case reflect.Map:
 		return d.decodeObjectToMap(v)
 	case reflect.Struct:
@@ -1049,10 +1051,10 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 		}
 
 		// Find field for key
-		subv := d.findStructField(v, &fields, key, keyStart, seenFields)
+		fieldValue := d.findStructField(v, &fields, key, keyStart, seenFields)
 
 		// Read value
-		if err := d.decodeValue(subv); err != nil {
+		if err := d.decodeValue(fieldValue); err != nil {
 			return err
 		}
 	}
@@ -1111,7 +1113,6 @@ func (d *decodeState) readString() ([]byte, error) {
 		}
 		s := d.data[d.offsetIntoData : d.offsetIntoData+length]
 		d.offsetIntoData += length
-		// Combined UTF-8 and NUL validation
 		if err := d.validateString(s); err != nil {
 			return nil, err
 		}
@@ -1123,7 +1124,6 @@ func (d *decodeState) readString() ([]byte, error) {
 			return nil, err
 		}
 		d.offsetIntoData += n
-		// Combined UTF-8 and NUL validation
 		if err := d.validateString(s); err != nil {
 			return nil, err
 		}
