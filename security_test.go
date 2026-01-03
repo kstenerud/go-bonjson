@@ -84,14 +84,14 @@ func TestInvalidUTF8Rejection(t *testing.T) {
 		name    string
 		content []byte
 	}{
-		{"invalid_continuation", []byte{0x80}},                    // Continuation byte without start
-		{"incomplete_2byte", []byte{0xC0}},                        // Incomplete 2-byte sequence
-		{"incomplete_3byte", []byte{0xE0, 0x80}},                  // Incomplete 3-byte sequence
-		{"incomplete_4byte", []byte{0xF0, 0x80, 0x80}},            // Incomplete 4-byte sequence
-		{"overlong_2byte", []byte{0xC0, 0x80}},                    // Overlong encoding of NUL
-		{"overlong_3byte", []byte{0xE0, 0x80, 0x80}},              // Overlong
-		{"invalid_surrogate", []byte{0xED, 0xA0, 0x80}},           // UTF-16 surrogate
-		{"above_max", []byte{0xF4, 0x90, 0x80, 0x80}},             // Above U+10FFFF
+		{"invalid_continuation", []byte{0x80}},          // Continuation byte without start
+		{"incomplete_2byte", []byte{0xC0}},              // Incomplete 2-byte sequence
+		{"incomplete_3byte", []byte{0xE0, 0x80}},        // Incomplete 3-byte sequence
+		{"incomplete_4byte", []byte{0xF0, 0x80, 0x80}},  // Incomplete 4-byte sequence
+		{"overlong_2byte", []byte{0xC0, 0x80}},          // Overlong encoding of NUL
+		{"overlong_3byte", []byte{0xE0, 0x80, 0x80}},    // Overlong
+		{"invalid_surrogate", []byte{0xED, 0xA0, 0x80}}, // UTF-16 surrogate
+		{"above_max", []byte{0xF4, 0x90, 0x80, 0x80}},   // Above U+10FFFF
 	}
 
 	for _, tt := range tests {
@@ -163,41 +163,42 @@ func TestNULCharacterAllowed(t *testing.T) {
 // Security Rule: Reject chunking (by default)
 // ============================================================================
 
-func TestChunkingRejectionDefault(t *testing.T) {
-	// Create a chunked string manually
-	// Long string with continuation bit set
+func TestChunkingLimitDefault(t *testing.T) {
+	// Create a string with more than 100 chunks (default limit)
 	var buf bytes.Buffer
 	buf.WriteByte(typeLongString)
-	// Length field with continuation=true
-	encodeLengthField(buf.AvailableBuffer()[:16], 5, true)
-	buf.WriteByte(0x0b) // length 5, continuation bit set
-	buf.Write([]byte("hello"))
-	// Another chunk
-	encodeLengthField(buf.AvailableBuffer()[:16], 5, false)
-	buf.WriteByte(0x0b) // length 5, continuation bit not set (last chunk)
-	buf.Write([]byte("world"))
+
+	// Create 101 chunks to exceed the default limit of 100
+	for i := 0; i < 101; i++ {
+		continuation := i < 100 // continuation bit for all but last
+		if continuation {
+			buf.WriteByte(0x03) // length 1, continuation bit set
+		} else {
+			buf.WriteByte(0x02) // length 1, no continuation
+		}
+		buf.WriteByte('x')
+	}
 
 	var v string
 	err := Unmarshal(buf.Bytes(), &v)
 	if err == nil {
-		t.Error("expected error for chunked string (default)")
+		t.Error("expected error for string with too many chunks")
 	}
 
-	var chunkErr *ChunkingError
+	var chunkErr *TooManyChunksError
 	if !errors.As(err, &chunkErr) {
 		t.Logf("got error: %T: %v", err, err)
 	}
 }
 
-func TestChunkingAllowed(t *testing.T) {
-	// This test depends on having properly formatted chunked data
-	// For now, just verify the AllowChunking method exists and can be called
+func TestChunkingWithinLimit(t *testing.T) {
+	// Verify SetMaxChunks method exists and can be called
 	dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
-	dec.AllowChunking()
+	dec.SetMaxChunks(1000) // allow more chunks
 
 	var v any
 	if err := dec.Decode(&v); err != nil {
-		t.Errorf("AllowChunking decode error: %v", err)
+		t.Errorf("SetMaxChunks decode error: %v", err)
 	}
 }
 
@@ -440,8 +441,8 @@ func TestSmallIntBoundaries(t *testing.T) {
 	// Test exact boundaries of small integer encoding
 	tests := []int64{
 		-101, -100, -99, // Around negative boundary
-		-1, 0, 1,         // Around zero
-		99, 100, 101,     // Around positive boundary
+		-1, 0, 1, // Around zero
+		99, 100, 101, // Around positive boundary
 	}
 
 	for _, v := range tests {

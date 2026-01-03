@@ -254,10 +254,10 @@ func TestDecoderDisallowUnknownFields(t *testing.T) {
 	}
 }
 
-func TestDecoderAllowChunking(t *testing.T) {
+func TestDecoderSetMaxChunks(t *testing.T) {
 	// Just verify the method can be called
 	dec := NewDecoder(strings.NewReader(""))
-	dec.AllowChunking()
+	dec.SetMaxChunks(200)
 }
 
 func TestDecoderAllowNUL(t *testing.T) {

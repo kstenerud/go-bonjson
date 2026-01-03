@@ -396,11 +396,12 @@ func encodeString(dst []byte, s string) int {
 
 // decodeLongString decodes a long string (potentially chunked).
 // Returns the string bytes, bytes consumed, and any error.
-// If allowChunking is false, returns ChunkingError if chunking is detected.
-func decodeLongString(src []byte, allowChunking bool, maxLength int64) ([]byte, int, error) {
+// If maxChunks > 0, returns TooManyChunksError if chunk count exceeds the limit.
+func decodeLongString(src []byte, maxChunks int, maxLength int64) ([]byte, int, error) {
 	var result []byte
 	offset := 0
 	totalLength := int64(0)
+	chunkCount := 0
 
 	for {
 		length, continuation, n, err := decodeLengthField(src[offset:])
@@ -408,9 +409,10 @@ func decodeLongString(src []byte, allowChunking bool, maxLength int64) ([]byte, 
 			return nil, 0, err
 		}
 		offset += n
+		chunkCount++
 
-		if !allowChunking && continuation {
-			return nil, 0, &ChunkingError{Offset: int64(offset)}
+		if maxChunks > 0 && chunkCount > maxChunks {
+			return nil, 0, &TooManyChunksError{Count: chunkCount, Max: maxChunks, Offset: int64(offset)}
 		}
 
 		totalLength += int64(length)

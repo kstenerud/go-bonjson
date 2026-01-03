@@ -84,4 +84,5 @@ const (
 	defaultMaxStringLength   = 10 * 1024 * 1024 // 10 MB
 	defaultMaxContainerDepth = 1000
 	defaultMaxObjectKeys     = 100000
+	defaultMaxChunks         = 100 // Max chunks per string value
 )

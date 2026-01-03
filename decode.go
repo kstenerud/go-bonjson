@@ -41,8 +41,7 @@ import (
 // Unlike JSON's Unmarshal, BONJSON's Unmarshal:
 // - Rejects documents with duplicate object keys
 // - Rejects strings with invalid UTF-8
-// - Rejects strings with NUL characters (by default)
-// - Does not allow chunking (by default)
+// - Rejects strings with NUL characters (unless configured to allow)
 func Unmarshal(data []byte, v any) error {
 	d := newDecodeState()
 	defer decodeStatePool.Put(d)
@@ -65,7 +64,7 @@ type decodeState struct {
 
 	savedError            error
 	disallowUnknownFields bool
-	allowChunking         bool
+	maxChunks             int
 	allowNUL              bool
 	maxStringLength       int64
 	maxDepth              int
@@ -94,7 +93,7 @@ func newDecodeState() *decodeState {
 	d := decodeStatePool.Get().(*decodeState)
 	d.savedError = nil
 	d.disallowUnknownFields = false
-	d.allowChunking = false
+	d.maxChunks = defaultMaxChunks
 	d.allowNUL = false
 	d.maxStringLength = defaultMaxStringLength
 	d.maxDepth = defaultMaxContainerDepth
@@ -313,7 +312,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 		return d.storeString(s, pv, ut)
 
 	case tc == typeLongString:
-		s, n, err := decodeLongString(d.data[d.off:], d.allowChunking, d.maxStringLength)
+		s, n, err := decodeLongString(d.data[d.off:], d.maxChunks, d.maxStringLength)
 		if err != nil {
 			return err
 		}
@@ -1092,7 +1091,7 @@ func (d *decodeState) readString() ([]byte, error) {
 		return s, nil
 
 	case tc == typeLongString:
-		s, n, err := decodeLongString(d.data[d.off:], d.allowChunking, d.maxStringLength)
+		s, n, err := decodeLongString(d.data[d.off:], d.maxChunks, d.maxStringLength)
 		if err != nil {
 			return nil, err
 		}
@@ -1162,7 +1161,7 @@ func (d *decodeState) skipValue(tc byte) error {
 		d.off += length
 		return nil
 	case tc == typeLongString:
-		_, n, err := decodeLongString(d.data[d.off:], d.allowChunking, d.maxStringLength)
+		_, n, err := decodeLongString(d.data[d.off:], d.maxChunks, d.maxStringLength)
 		if err != nil {
 			return err
 		}

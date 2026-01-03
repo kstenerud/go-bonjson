@@ -2,12 +2,14 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package bonjson implements encoding and decoding of BONJSON (Binary Object
-// Notation for JSON), a binary format that is 1:1 compatible with JSON.
+// Package bonjson implements encoding and decoding in the BONJSON data format.
 //
-// BONJSON is designed to be a drop-in replacement for JSON with the following
-// advantages:
-//   - Much faster to parse (no escape sequence handling, no number parsing)
+// https://github.com/kstenerud/bonjson
+//
+// BONJSON is a binary format that is designed as a drop-in replacement for JSON.
+//
+// BONJSON has the following advantages:
+//   - Much faster to parse (binary, no escape sequence handling, no number parsing)
 //   - More compact representation
 //   - Safer against common JSON attack vectors
 //

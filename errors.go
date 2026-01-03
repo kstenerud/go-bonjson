@@ -122,13 +122,15 @@ func (e *NullInStringError) Error() string {
 	return fmt.Sprintf("bonjson: NUL character in string at offset %d", e.Offset)
 }
 
-// ChunkingError is returned when chunking is encountered but not allowed.
-type ChunkingError struct {
+// TooManyChunksError is returned when a string has more chunks than allowed.
+type TooManyChunksError struct {
+	Count  int
+	Max    int
 	Offset int64
 }
 
-func (e *ChunkingError) Error() string {
-	return fmt.Sprintf("bonjson: chunking not allowed at offset %d", e.Offset)
+func (e *TooManyChunksError) Error() string {
+	return fmt.Sprintf("bonjson: string has %d chunks, max allowed is %d at offset %d", e.Count, e.Max, e.Offset)
 }
 
 // ValueRangeError is returned when a numeric value is out of range.
