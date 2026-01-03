@@ -945,18 +945,18 @@ func (d *decodeState) convertMapKey(kt reflect.Type, key []byte, keyStart int) (
 		return kv, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, err := strconv.ParseInt(string(key), 10, 64)
-		if err != nil || kt.OverflowInt(n) {
+		kv := reflect.New(kt).Elem()
+		if err != nil || kv.OverflowInt(n) {
 			return reflect.Value{}, &UnmarshalTypeError{Value: "number " + string(key), Type: kt, Offset: int64(keyStart)}
 		}
-		kv := reflect.New(kt).Elem()
 		kv.SetInt(n)
 		return kv, nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		n, err := strconv.ParseUint(string(key), 10, 64)
-		if err != nil || kt.OverflowUint(n) {
+		kv := reflect.New(kt).Elem()
+		if err != nil || kv.OverflowUint(n) {
 			return reflect.Value{}, &UnmarshalTypeError{Value: "number " + string(key), Type: kt, Offset: int64(keyStart)}
 		}
-		kv := reflect.New(kt).Elem()
 		kv.SetUint(n)
 		return kv, nil
 	default:

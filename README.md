@@ -47,7 +47,6 @@ BONJSON provides significant advantages over text-based JSON:
 | EncodedSize/struct_medium      |            62 |         82 |  75.61  |
 | EncodedSize/map_mixed          |            28 |         41 |  68.29  |
 
-
 ## Drop-in Replacement
 
 This library is designed to be a drop-in replacement for `encoding/json`. Simply change your imports:
