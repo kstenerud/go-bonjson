@@ -30,6 +30,3 @@ Thumbs.db
 *.prof
 coverage.out
 coverage.html
-
-# Project specificinformation
-information
