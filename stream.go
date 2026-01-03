@@ -6,8 +6,10 @@ package bonjson
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
+	"math/bits"
 )
 
 // A Decoder reads and decodes BONJSON values from an input stream.
@@ -194,23 +196,14 @@ func (dec *Decoder) readLengthField() (length uint64, continuation bool, err err
 		if err := dec.readBytes(8); err != nil {
 			return 0, false, err
 		}
-		// Decode from buffer
+		// Decode from buffer using binary.LittleEndian
 		start := len(dec.buf) - 8
-		var payload uint64
-		for i := 0; i < 8; i++ {
-			payload |= uint64(dec.buf[start+i]) << (i * 8)
-		}
+		payload := binary.LittleEndian.Uint64(dec.buf[start:])
 		return payload >> 1, (payload & 1) != 0, nil
 	}
 
-	// Count trailing zeros to determine field size
-	count := 1
-	for i := 0; i < 8; i++ {
-		if header&(1<<i) != 0 {
-			count = i + 1
-			break
-		}
-	}
+	// Count trailing zeros + 1 gives us the byte count
+	count := bits.TrailingZeros8(header) + 1
 
 	// Read remaining bytes
 	if count > 1 {
@@ -219,13 +212,31 @@ func (dec *Decoder) readLengthField() (length uint64, continuation bool, err err
 		}
 	}
 
-	// Decode
+	// Decode using binary.LittleEndian where possible
 	start := len(dec.buf) - count
-	var encoded uint64
-	for i := 0; i < count; i++ {
-		encoded |= uint64(dec.buf[start+i]) << (i * 8)
+	var payload uint64
+	switch count {
+	case 1:
+		payload = uint64(header) >> 1
+	case 2:
+		payload = uint64(binary.LittleEndian.Uint16(dec.buf[start:])) >> 2
+	case 3:
+		payload = (uint64(dec.buf[start]) | uint64(dec.buf[start+1])<<8 | uint64(dec.buf[start+2])<<16) >> 3
+	case 4:
+		payload = uint64(binary.LittleEndian.Uint32(dec.buf[start:])) >> 4
+	default:
+		// For 5-8 bytes
+		if len(dec.buf)-start >= 8 {
+			payload = binary.LittleEndian.Uint64(dec.buf[start:]) >> count
+		} else {
+			// Build up the value
+			payload = uint64(binary.LittleEndian.Uint32(dec.buf[start:]))
+			for i := 4; i < count; i++ {
+				payload |= uint64(dec.buf[start+i]) << (i * 8)
+			}
+			payload >>= count
+		}
 	}
-	payload := encoded >> count
 	return payload >> 1, (payload & 1) != 0, nil
 }
 
@@ -365,25 +376,43 @@ func (dec *Decoder) Token() (Token, error) {
 
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		n := int(tc&0x07) + 1
-		buf := make([]byte, n)
-		if _, err := io.ReadFull(dec.r, buf); err != nil {
+		var buf [8]byte
+		if _, err := io.ReadFull(dec.r, buf[:n]); err != nil {
 			return nil, err
 		}
 		var val uint64
-		for i := 0; i < n; i++ {
-			val |= uint64(buf[i]) << (i * 8)
+		switch n {
+		case 1:
+			val = uint64(buf[0])
+		case 2:
+			val = uint64(binary.LittleEndian.Uint16(buf[:]))
+		case 3:
+			val = uint64(buf[0]) | uint64(buf[1])<<8 | uint64(buf[2])<<16
+		case 4:
+			val = uint64(binary.LittleEndian.Uint32(buf[:]))
+		default: // 5-8 bytes
+			val = binary.LittleEndian.Uint64(buf[:])
 		}
 		return val, nil
 
 	case tc >= typeSintBase && tc <= typeSintBase+7:
 		n := int(tc&0x07) + 1
-		buf := make([]byte, n)
-		if _, err := io.ReadFull(dec.r, buf); err != nil {
+		var buf [8]byte
+		if _, err := io.ReadFull(dec.r, buf[:n]); err != nil {
 			return nil, err
 		}
 		var uval uint64
-		for i := 0; i < n; i++ {
-			uval |= uint64(buf[i]) << (i * 8)
+		switch n {
+		case 1:
+			uval = uint64(buf[0])
+		case 2:
+			uval = uint64(binary.LittleEndian.Uint16(buf[:]))
+		case 3:
+			uval = uint64(buf[0]) | uint64(buf[1])<<8 | uint64(buf[2])<<16
+		case 4:
+			uval = uint64(binary.LittleEndian.Uint32(buf[:]))
+		default: // 5-8 bytes
+			uval = binary.LittleEndian.Uint64(buf[:])
 		}
 		val := int64(uval)
 		if n < 8 {
