@@ -488,13 +488,7 @@ func bigFloatToBigNumber(bf *big.Float) *BigNumber {
 	var exponent int32
 
 	// Find 'e' or 'E'
-	eIdx := -1
-	for i, c := range text {
-		if c == 'e' || c == 'E' {
-			eIdx = i
-			break
-		}
-	}
+	eIdx := strings.IndexAny(text, "eE")
 
 	if eIdx >= 0 {
 		significandStr = text[:eIdx]
@@ -512,13 +506,7 @@ func bigFloatToBigNumber(bf *big.Float) *BigNumber {
 	}
 
 	// Remove decimal point and adjust exponent
-	dotIdx := -1
-	for i, c := range significandStr {
-		if c == '.' {
-			dotIdx = i
-			break
-		}
-	}
+	dotIdx := strings.IndexByte(significandStr, '.')
 
 	if dotIdx >= 0 {
 		// Number of digits after decimal point
