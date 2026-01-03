@@ -470,6 +470,86 @@ func TestTextMarshaler(t *testing.T) {
 	}
 }
 
+// errorUnmarshaler is a type that always returns an error when unmarshaling.
+type errorUnmarshaler struct{}
+
+func (e *errorUnmarshaler) UnmarshalBONJSON(data []byte) error {
+	return errors.New("intentional unmarshal error")
+}
+
+func TestCustomUnmarshalerError(t *testing.T) {
+	// Marshal some valid data
+	data, err := Marshal(42)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Unmarshal into a type that always returns an error
+	var got errorUnmarshaler
+	err = Unmarshal(data, &got)
+	if err == nil {
+		t.Error("expected error from custom unmarshaler")
+	}
+	if !strings.Contains(err.Error(), "intentional unmarshal error") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestTextUnmarshalerError(t *testing.T) {
+	// textMarshaler expects "A:B" format, test with invalid format
+	data, err := Marshal("invalid-no-colon")
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got textMarshaler
+	err = Unmarshal(data, &got)
+	if err == nil {
+		t.Error("expected error from TextUnmarshaler")
+	}
+}
+
+// ============================================================================
+// BigNumber Type Tests
+// ============================================================================
+
+func TestBigNumberMarshalAsStruct(t *testing.T) {
+	// BigNumber is a public type but is intended for internal use.
+	// When marshaled directly, it encodes as a regular struct (not as a native BigNumber).
+	// Users should use *big.Int or *big.Float for arbitrary-precision numbers.
+	bn := BigNumber{
+		Significand: []byte{0x2a}, // 42
+		Exponent:    0,
+		Negative:    false,
+	}
+
+	data, err := Marshal(bn)
+	if err != nil {
+		t.Fatalf("Marshal BigNumber error: %v", err)
+	}
+
+	// Verify it marshals (as a struct, not as native BigNumber)
+	if len(data) == 0 {
+		t.Error("expected non-empty data")
+	}
+
+	// Unmarshal back - should get a struct
+	var got BigNumber
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal BigNumber error: %v", err)
+	}
+
+	if !bytes.Equal(got.Significand, bn.Significand) {
+		t.Errorf("Significand mismatch: got %v, want %v", got.Significand, bn.Significand)
+	}
+	if got.Exponent != bn.Exponent {
+		t.Errorf("Exponent = %d, want %d", got.Exponent, bn.Exponent)
+	}
+	if got.Negative != bn.Negative {
+		t.Errorf("Negative = %v, want %v", got.Negative, bn.Negative)
+	}
+}
+
 // ============================================================================
 // Error Cases
 // ============================================================================

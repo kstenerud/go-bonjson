@@ -158,6 +158,36 @@ func TestDecoderMore(t *testing.T) {
 	}
 }
 
+func TestDecoderMoreOnEmptyInput(t *testing.T) {
+	// Test More() on empty input
+	dec := NewDecoder(bytes.NewReader([]byte{}))
+
+	if dec.More() {
+		t.Error("More() = true on empty input, expected false")
+	}
+}
+
+func TestDecoderMoreDetectsContainerEnd(t *testing.T) {
+	// Test More() correctly identifies container end marker
+	// More() peeks the next byte and returns false if it's typeContainerEnd
+	data := []byte{typeContainerEnd}
+	dec := NewDecoder(bytes.NewReader(data))
+
+	if dec.More() {
+		t.Error("More() = true for container end marker, expected false")
+	}
+}
+
+func TestDecoderMoreDetectsValue(t *testing.T) {
+	// Test More() correctly identifies a value is present
+	data := []byte{typeNull}
+	dec := NewDecoder(bytes.NewReader(data))
+
+	if !dec.More() {
+		t.Error("More() = false for null value, expected true")
+	}
+}
+
 func TestDecoderBuffered(t *testing.T) {
 	// Test Buffered() method returns unconsumed data
 	data, _ := Marshal(42)
@@ -480,6 +510,58 @@ func TestDecoderTokenArray(t *testing.T) {
 	}
 }
 
+func TestDecoderTokenObjectKeys(t *testing.T) {
+	// Test that Token() returns object keys as strings
+	original := map[string]int{"alpha": 1, "beta": 2}
+	data, _ := Marshal(original)
+	dec := NewDecoder(bytes.NewReader(data))
+
+	// Object start
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	if tok != Delim('{') {
+		t.Fatalf("expected '{', got %v", tok)
+	}
+
+	// Read key-value pairs
+	keys := make(map[string]bool)
+	for i := 0; i < 2; i++ {
+		// Key should be a string
+		keyTok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("Token error reading key %d: %v", i, err)
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			t.Errorf("key %d: expected string, got %T: %v", i, keyTok, keyTok)
+		} else {
+			keys[key] = true
+		}
+
+		// Value
+		_, err = dec.Token()
+		if err != nil {
+			t.Fatalf("Token error reading value %d: %v", i, err)
+		}
+	}
+
+	// Verify we got the expected keys
+	if !keys["alpha"] || !keys["beta"] {
+		t.Errorf("missing expected keys, got: %v", keys)
+	}
+
+	// Object end
+	tok, err = dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	if tok != Delim('}') {
+		t.Errorf("expected '}', got %v", tok)
+	}
+}
+
 func TestDelim(t *testing.T) {
 	// Test Delim type
 	delims := []Delim{'{', '}', '[', ']'}
@@ -529,6 +611,30 @@ func TestEncoderWriteError(t *testing.T) {
 	err := enc.Encode(map[string]int{"a": 1})
 	if err == nil {
 		t.Error("expected error from writer")
+	}
+}
+
+func TestEncoderErrorStateIsSticky(t *testing.T) {
+	// Test that once an encoder encounters a write error, it remembers the error
+	// and returns it on subsequent calls. This is by design - encoders become
+	// unusable after a write error to prevent partial/corrupted data.
+	enc := NewEncoder(&errorWriter{err: io.ErrShortWrite})
+
+	// First encode should fail
+	err1 := enc.Encode(42)
+	if err1 == nil {
+		t.Fatal("expected error on first encode")
+	}
+
+	// Second encode should return the same error (sticky error state)
+	err2 := enc.Encode(123)
+	if err2 == nil {
+		t.Fatal("expected error on second encode")
+	}
+
+	// Both errors should be the same
+	if err1 != err2 {
+		t.Errorf("errors differ: first=%v, second=%v", err1, err2)
 	}
 }
 
