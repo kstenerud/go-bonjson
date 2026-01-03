@@ -766,33 +766,33 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 	return nil
 }
 
-// validateString performs combined UTF-8 validation and NUL check in a single pass.
-// This is more efficient than calling utf8.Valid and bytes.IndexByte separately,
-// especially for ASCII strings which are very common.
+// validateString checks for NUL bytes and validates UTF-8 encoding.
+// Uses SIMD-optimized stdlib functions for both checks.
+// The loop only runs on the error path to find the exact invalid byte position.
 func (d *decodeState) validateString(s []byte) error {
 	baseOff := d.off - len(s)
 
-	// Use SIMD-optimized bytes.IndexByte for fast NUL detection upfront
+	// SIMD-optimized NUL detection - also gives us the exact position
 	if !d.allowNUL {
-		zeroIdx := bytes.IndexByte(s, 0)
-		if zeroIdx >= 0 {
+		if zeroIdx := bytes.IndexByte(s, 0); zeroIdx >= 0 {
 			return &NullInStringError{Offset: int64(baseOff + zeroIdx)}
 		}
 	}
 
+	// SIMD-optimized UTF-8 validation (handles ASCII and multi-byte sequences)
+	if utf8.Valid(s) {
+		return nil
+	}
+
+	// Error path only: find the exact position of the invalid byte
 	for i := 0; i < len(s); {
 		b := s[i]
-
-		// Fast path for ASCII (most common case)
 		if b < utf8.RuneSelf {
 			i++
 			continue
 		}
-
-		// Multi-byte UTF-8 sequence
 		_, size := utf8.DecodeRune(s[i:])
 		if size == 1 {
-			// Invalid UTF-8 (DecodeRune returns RuneError with size 1)
 			return &InvalidUTF8Error{Offset: int64(baseOff + i)}
 		}
 		i += size
