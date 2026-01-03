@@ -332,41 +332,48 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 	}
 }
 
-// indirect walks down v allocating pointers as needed,
-// until it gets to a non-pointer.
+// indirect walks down v allocating pointers as needed, until it gets to a non-pointer.
 func indirect(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnmarshaler, reflect.Value) {
-	v0 := v
 	haveAddr := false
+	v0 := v
+	v0Type := v0.Type()
+	v0Kind := v0Type.Kind()
 
-	// Check if we should take the address of v to check for pointer receiver methods.
+	// Cache type and kind to avoid repeated reflect calls
+	vType := v0Type
+	vKind := v0Kind
+
+	// Decide if we should take the address of v to check for pointer receiver methods.
 	// Only do this for named types (Name() != "") that are addressable.
-	// For common primitive kinds, we can skip the Name() check since they're always
-	// unnamed unless explicitly defined as a named type. However, since any type
-	// can be named (e.g., type MyInt int), we need to be careful.
-	// Optimization: skip Name() check for kinds that rarely have methods.
-	if v.Kind() != reflect.Pointer && v.CanAddr() {
+	if vKind != reflect.Pointer && v.CanAddr() {
 		// Fast path: for basic types without methods on either value or pointer receiver,
 		// we can skip the Name() check entirely.
-		t := v.Type()
-		if t.NumMethod() > 0 || reflect.PointerTo(t).NumMethod() > 0 {
+		if vType.NumMethod() > 0 || reflect.PointerTo(vType).NumMethod() > 0 {
 			// Type has methods, need to check if it's named to take address
-			if t.Name() != "" {
+			if vType.Name() != "" {
 				haveAddr = true
 				v = v.Addr()
+				vType = v.Type()
+				vKind = reflect.Pointer
 			}
 		}
 	}
+
 	for {
-		if v.Kind() == reflect.Interface && !v.IsNil() {
+		if vKind == reflect.Interface && !v.IsNil() {
 			e := v.Elem()
-			if e.Kind() == reflect.Pointer && !e.IsNil() && (!decodingNull || e.Elem().Kind() == reflect.Pointer) {
+			eType := e.Type()
+			eKind := eType.Kind()
+			if eKind == reflect.Pointer && !e.IsNil() && (!decodingNull || e.Elem().Type().Kind() == reflect.Pointer) {
 				haveAddr = false
 				v = e
+				vType = eType
+				vKind = eKind
 				continue
 			}
 		}
 
-		if v.Kind() != reflect.Pointer {
+		if vKind != reflect.Pointer {
 			break
 		}
 
@@ -374,14 +381,25 @@ func indirect(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnm
 			break
 		}
 
-		if v.Elem().Kind() == reflect.Interface && v.Elem().Elem().Equal(v) {
-			v = v.Elem()
-			break
+		// Get elem type from the pointer type (safe even if pointer is nil)
+		eType := vType.Elem()
+		eKind := eType.Kind()
+
+		// Check for interface cycle before getting actual elem value
+		if eKind == reflect.Interface {
+			e := v.Elem()
+			if e.IsValid() && e.Elem().Equal(v) {
+				v = e
+				vType = eType
+				vKind = eKind
+				break
+			}
 		}
+
 		if v.IsNil() {
-			v.Set(reflect.New(v.Type().Elem()))
+			v.Set(reflect.New(eType))
 		}
-		if v.Type().NumMethod() > 0 && v.CanInterface() {
+		if vType.NumMethod() > 0 && v.CanInterface() {
 			if u, ok := reflect.TypeAssert[Unmarshaler](v); ok {
 				return u, nil, reflect.Value{}
 			}
@@ -394,9 +412,13 @@ func indirect(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnm
 
 		if haveAddr {
 			v = v0
+			vType = v0Type
+			vKind = v0Kind
 			haveAddr = false
 		} else {
 			v = v.Elem()
+			vType = eType
+			vKind = eKind
 		}
 	}
 	return nil, nil, v
