@@ -179,7 +179,7 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 	}
 
 	// Check for unmarshaler first
-	u, ut, pv := indirect(v, tc == typeNull)
+	u, ut, pv := dereferenceAndGetUnmarshaler(v, tc == typeNull)
 	if u != nil {
 		// Need to read the entire value for the unmarshaler
 		start := d.offsetIntoData - 1
@@ -332,8 +332,8 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 	}
 }
 
-// indirect walks down v allocating pointers as needed, until it gets to a non-pointer.
-func indirect(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnmarshaler, reflect.Value) {
+// dereferenceAndGetUnmarshaler walks down v allocating pointers as needed, until it gets to a non-pointer.
+func dereferenceAndGetUnmarshaler(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnmarshaler, reflect.Value) {
 	haveAddr := false
 	v0 := v
 	v0Type := v0.Type()
