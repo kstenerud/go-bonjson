@@ -772,15 +772,12 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 func (d *decodeState) validateString(s []byte) error {
 	baseOff := d.off - len(s)
 
-	// SIMD-optimized NUL detection - also gives us the exact position
-	if !d.allowNUL {
-		if zeroIdx := bytes.IndexByte(s, 0); zeroIdx >= 0 {
-			return &NullInStringError{Offset: int64(baseOff + zeroIdx)}
-		}
-	}
-
-	// SIMD-optimized UTF-8 validation (handles ASCII and multi-byte sequences)
 	if utf8.Valid(s) {
+		if !d.allowNUL {
+			if zeroIdx := bytes.IndexByte(s, 0); zeroIdx >= 0 {
+				return &NullInStringError{Offset: int64(baseOff + zeroIdx)}
+			}
+		}
 		return nil
 	}
 
@@ -798,6 +795,7 @@ func (d *decodeState) validateString(s []byte) error {
 		i += size
 	}
 
+	// This shouldn't happen unless there's a bug in utf8.Valid
 	return nil
 }
 
