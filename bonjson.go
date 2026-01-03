@@ -11,6 +11,29 @@
 //   - More compact representation
 //   - Safer against common JSON attack vectors
 //
+// # API Compatibility with encoding/json
+//
+// This package provides a compatible API with encoding/json for easy migration.
+// The following functions and types work identically:
+//
+//   - Marshal, Unmarshal, Valid
+//   - NewEncoder, NewDecoder
+//   - Encoder.Encode, Decoder.Decode
+//   - Decoder.UseNumber, Decoder.DisallowUnknownFields
+//   - Decoder.Buffered, Decoder.More, Decoder.Token, Decoder.InputOffset
+//   - Number, RawMessage, Delim, Token
+//   - All error types (SyntaxError, UnmarshalTypeError, etc.)
+//
+// The following encoding/json functions are NOT provided because they are
+// specific to text-based JSON formatting and not applicable to binary BONJSON:
+//
+//   - MarshalIndent (BONJSON is binary, no indentation)
+//   - Compact (BONJSON is always compact)
+//   - Indent (BONJSON is binary, no indentation)
+//   - HTMLEscape (BONJSON is binary, no HTML escaping needed)
+//   - Encoder.SetEscapeHTML (BONJSON is binary, no HTML escaping needed)
+//   - Encoder.SetIndent (BONJSON is binary, no indentation)
+//
 // # Security Considerations
 //
 // Unlike JSON, BONJSON enforces strict security rules by default:
