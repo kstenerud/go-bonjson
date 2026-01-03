@@ -5,6 +5,7 @@
 package bonjson
 
 import (
+	"bytes"
 	"cmp"
 	"reflect"
 	"slices"
@@ -65,28 +66,13 @@ func (sf *structFields) findByFoldedName(name []byte) *field {
 
 // bytesEqualString compares a byte slice to a string without allocation.
 func bytesEqualString(b []byte, s string) bool {
-	if len(b) != len(s) {
-		return false
-	}
-	for i := range b {
-		if b[i] != s[i] {
-			return false
-		}
-	}
-	return true
+	// The compiler optimizes this to avoid allocations.
+	return string(b) == s
 }
 
 // bytesEqual compares two byte slices.
 func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(a, b)
 }
 
 type isZeroer interface {
