@@ -183,3 +183,12 @@ type InvalidValueError struct {
 func (e *InvalidValueError) Error() string {
 	return fmt.Sprintf("bonjson: invalid value %s at offset %d", e.Value, e.Offset)
 }
+
+// TrailingDataError is returned when there is unexpected data after a complete value.
+type TrailingDataError struct {
+	Offset int64
+}
+
+func (e *TrailingDataError) Error() string {
+	return fmt.Sprintf("bonjson: trailing data after value at offset %d", e.Offset)
+}

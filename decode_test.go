@@ -152,6 +152,268 @@ func TestUnmarshalTypeError(t *testing.T) {
 }
 
 // ============================================================================
+// UnmarshalPartial Tests
+// ============================================================================
+
+func TestUnmarshalPartial(t *testing.T) {
+	tests := []struct {
+		name         string
+		data         []byte
+		ptr          any
+		want         any
+		wantConsumed int
+	}{
+		// Values without trailing data - should succeed
+		{"int_no_trailing", []byte{0x0a}, new(int), 10, 1},
+		{"null_no_trailing", []byte{typeNull}, new(any), nil, 1},
+		{"true_no_trailing", []byte{typeTrue}, new(bool), true, 1},
+		{"string_no_trailing", []byte{typeShortStringBase + 2, 'h', 'i'}, new(string), "hi", 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			consumed, err := UnmarshalPartial(tt.data, tt.ptr)
+			if err != nil {
+				t.Fatalf("UnmarshalPartial error: %v", err)
+			}
+			if consumed != tt.wantConsumed {
+				t.Errorf("consumed = %d, want %d", consumed, tt.wantConsumed)
+			}
+			got := reflect.ValueOf(tt.ptr).Elem().Interface()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnmarshalPartialReturnsConsumedOnTrailingData(t *testing.T) {
+	// UnmarshalPartial should return error on trailing data, but also return consumed count
+	data := []byte{0x05, 0x99, 0x88, 0x77} // int 5 followed by garbage
+	var v int
+	consumed, err := UnmarshalPartial(data, &v)
+	if err == nil {
+		t.Error("expected error for trailing bytes")
+	}
+	// Should report the position where trailing data starts
+	if consumed != 1 {
+		t.Errorf("consumed = %d, want 1", consumed)
+	}
+	// Value should still be decoded
+	if v != 5 {
+		t.Errorf("v = %d, want 5", v)
+	}
+	var trailingErr *TrailingDataError
+	if !errors.As(err, &trailingErr) {
+		t.Errorf("expected TrailingDataError, got %T: %v", err, err)
+	}
+	if trailingErr.Offset != 1 {
+		t.Errorf("Offset = %d, want 1", trailingErr.Offset)
+	}
+}
+
+func TestUnmarshalPartialReturnsConsumedOnError(t *testing.T) {
+	// Test that UnmarshalPartial returns bytes consumed even on decode error
+
+	// Truncated int64 (type code says 8 bytes follow, but only 2 provided)
+	data := []byte{typeUintBase + 7, 0x01, 0x02}
+	var v int
+	n, err := UnmarshalPartial(data, &v)
+	if err == nil {
+		t.Error("expected error for truncated data")
+	}
+	// Should have consumed at least the type byte
+	if n < 1 {
+		t.Errorf("expected n >= 1, got %d", n)
+	}
+	var truncErr *TruncatedDataError
+	if !errors.As(err, &truncErr) {
+		t.Errorf("expected TruncatedDataError, got %T: %v", err, err)
+	}
+}
+
+func TestUnmarshalPartialErrorConditions(t *testing.T) {
+	// Test all error conditions that can occur during partial decoding
+
+	t.Run("InvalidTypeCodeError", func(t *testing.T) {
+		// Reserved type codes 0x65-0x67 and 0x90-0x98 are invalid
+		data := []byte{0x65}
+		var v any
+		n, err := UnmarshalPartial(data, &v)
+		if err == nil {
+			t.Error("expected error")
+		}
+		_ = n // byte count returned even on error
+		var typeErr *InvalidTypeCodeError
+		if !errors.As(err, &typeErr) {
+			t.Errorf("expected InvalidTypeCodeError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("UnmarshalTypeError", func(t *testing.T) {
+		// String value into int destination
+		data := []byte{typeShortStringBase + 2, 'h', 'i'}
+		var v int
+		n, err := UnmarshalPartial(data, &v)
+		if err == nil {
+			t.Error("expected error")
+		}
+		if n != 3 {
+			t.Errorf("expected n = 3, got %d", n)
+		}
+		var typeErr *UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			t.Errorf("expected UnmarshalTypeError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("InvalidUTF8Error", func(t *testing.T) {
+		// Invalid UTF-8 sequence in string
+		data := []byte{typeShortStringBase + 2, 0xff, 0xfe}
+		var v string
+		n, err := UnmarshalPartial(data, &v)
+		if err == nil {
+			t.Error("expected error")
+		}
+		_ = n
+		var utf8Err *InvalidUTF8Error
+		if !errors.As(err, &utf8Err) {
+			t.Errorf("expected InvalidUTF8Error, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("NullInStringError", func(t *testing.T) {
+		// NUL character in string (forbidden by default)
+		data := []byte{typeShortStringBase + 3, 'a', 0x00, 'b'}
+		var v string
+		n, err := UnmarshalPartial(data, &v)
+		if err == nil {
+			t.Error("expected error")
+		}
+		_ = n
+		var nulErr *NullInStringError
+		if !errors.As(err, &nulErr) {
+			t.Errorf("expected NullInStringError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("DuplicateKeyError", func(t *testing.T) {
+		// Object with duplicate keys
+		data := []byte{
+			typeObjectStart,
+			typeShortStringBase + 1, 'a', 0x01, // "a": 1
+			typeShortStringBase + 1, 'a', 0x02, // "a": 2 (duplicate)
+			typeContainerEnd,
+		}
+		var v map[string]int
+		n, err := UnmarshalPartial(data, &v)
+		if err == nil {
+			t.Error("expected error")
+		}
+		_ = n
+		var dupErr *DuplicateKeyError
+		if !errors.As(err, &dupErr) {
+			t.Errorf("expected DuplicateKeyError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("MaxDepthError", func(t *testing.T) {
+		// Create deeply nested arrays exceeding default max depth
+		var buf bytes.Buffer
+		for i := 0; i < 1001; i++ {
+			buf.WriteByte(typeArrayStart)
+		}
+		buf.WriteByte(typeNull)
+		for i := 0; i < 1001; i++ {
+			buf.WriteByte(typeContainerEnd)
+		}
+		var v any
+		n, err := UnmarshalPartial(buf.Bytes(), &v)
+		if err == nil {
+			t.Error("expected error")
+		}
+		_ = n
+		var depthErr *MaxDepthError
+		if !errors.As(err, &depthErr) {
+			t.Errorf("expected MaxDepthError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("ValueRangeError", func(t *testing.T) {
+		// Large integer that overflows int8
+		data := []byte{typeUintBase + 1, 0x00, 0x01} // 256, overflows int8
+		var v int8
+		n, err := UnmarshalPartial(data, &v)
+		if err == nil {
+			t.Error("expected error")
+		}
+		_ = n
+		// Overflow manifests as UnmarshalTypeError (value can't fit in type)
+		var typeErr *UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			t.Errorf("expected UnmarshalTypeError for overflow, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("SyntaxError_NonStringKey", func(t *testing.T) {
+		// Object with non-string key
+		data := []byte{
+			typeObjectStart,
+			0x05, 0x01, // int key (invalid)
+			typeContainerEnd,
+		}
+		var v map[string]int
+		n, err := UnmarshalPartial(data, &v)
+		if err == nil {
+			t.Error("expected error")
+		}
+		_ = n
+		var syntaxErr *SyntaxError
+		if !errors.As(err, &syntaxErr) {
+			t.Errorf("expected SyntaxError, got %T: %v", err, err)
+		}
+	})
+}
+
+func TestUnmarshalPartialInvalidTarget(t *testing.T) {
+	// Test invalid target
+	_, err := UnmarshalPartial([]byte{0x05}, nil)
+	if err == nil {
+		t.Error("expected error for nil target")
+	}
+
+	_, err = UnmarshalPartial([]byte{0x05}, 42)
+	if err == nil {
+		t.Error("expected error for non-pointer target")
+	}
+}
+
+func TestUnmarshalRejectsTrailingBytes(t *testing.T) {
+	// Verify that regular Unmarshal still rejects trailing bytes
+	data := []byte{0x05, 0x99, 0x88} // int 5 followed by garbage
+	var v int
+	err := Unmarshal(data, &v)
+	if err == nil {
+		t.Error("expected error for trailing bytes")
+	}
+	var trailingErr *TrailingDataError
+	if !errors.As(err, &trailingErr) {
+		t.Errorf("expected TrailingDataError, got %T", err)
+	}
+	if trailingErr.Offset != 1 {
+		t.Errorf("Offset = %d, want 1", trailingErr.Offset)
+	}
+}
+
+func mustMarshal(v any) []byte {
+	data, err := Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+// ============================================================================
 // Struct Field Tests
 // ============================================================================
 

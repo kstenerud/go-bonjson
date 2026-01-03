@@ -49,6 +49,58 @@ func Unmarshal(data []byte, v any) error {
 	return d.unmarshal(v)
 }
 
+// UnmarshalPartial parses the BONJSON-encoded data and stores the result
+// in the value pointed to by v, returning the number of bytes consumed.
+// It behaves identically to [Unmarshal], but additionally returns the byte
+// count which indicates how far into the data decoding progressed.
+//
+// The returned byte count is valid even when an error occurs, allowing
+// callers to determine the position where the error was encountered.
+//
+// If v is nil or not a pointer, UnmarshalPartial returns [InvalidUnmarshalError].
+//
+// # Possible Errors
+//
+// The following error types may be returned during decoding:
+//
+//   - [TrailingDataError]: Unexpected data was found after the decoded value.
+//     The decoded document is complete, but there is extra data after the
+//     document ended.
+//
+//   - [TruncatedDataError]: The input data ended before a complete value
+//     could be read. The destination may contain a partially decoded value.
+//
+//   - [MaxDepthError]: Container nesting exceeded the maximum allowed depth.
+//
+//   - [TooManyChunksError]: A chunked string exceeded the maximum chunk count.
+//
+//   - [UnmarshalTypeError]: The BONJSON value's type is incompatible with
+//     the destination Go type (including numeric overflow).
+//
+//   - [NullInStringError]: A string contained a NUL character and we're
+//     configured to refuse it.
+//
+//   - [InvalidTypeCodeError]: An unrecognized or reserved type code was
+//     encountered. Decoding stopped at the invalid byte.
+//
+//   - [InvalidValueError]: A structurally valid but semantically invalid
+//     value was encountered (e.g., NaN or Infinity in a big number).
+//
+//   - [InvalidUTF8Error]: A string contained invalid UTF-8 sequences.
+//
+//   - [DuplicateKeyError]: An object contained duplicate keys.
+//
+//   - [SyntaxError]: Other structural errors in the BONJSON data (e.g.,
+//     non-string object keys).
+func UnmarshalPartial(data []byte, v any) (int, error) {
+	d := newDecodeState()
+	defer decodeStatePool.Put(d)
+
+	d.init(data)
+	err := d.unmarshal(v)
+	return d.offsetIntoData, err
+}
+
 // Unmarshaler is the interface implemented by types
 // that can unmarshal a BONJSON description of themselves.
 type Unmarshaler interface {
@@ -157,7 +209,7 @@ func (d *decodeState) unmarshal(v any) error {
 	}
 
 	if d.offsetIntoData < len(d.data) {
-		return &SyntaxError{msg: "trailing data after value", Offset: int64(d.offsetIntoData)}
+		return &TrailingDataError{Offset: int64(d.offsetIntoData)}
 	}
 
 	return d.savedError
