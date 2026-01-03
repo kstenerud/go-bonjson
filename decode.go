@@ -49,7 +49,7 @@ func Unmarshal(data []byte, v any) error {
 	return d.unmarshal(v)
 }
 
-// UnmarshalPartial parses the BONJSON-encoded data and stores the result
+// UnmarshalWithByteCount parses the BONJSON-encoded data and stores the result
 // in the value pointed to by v, returning the number of bytes consumed.
 // It behaves identically to [Unmarshal], but additionally returns the byte
 // count which indicates how far into the data decoding progressed.
@@ -57,7 +57,7 @@ func Unmarshal(data []byte, v any) error {
 // The returned byte count is valid even when an error occurs, allowing
 // callers to determine the position where the error was encountered.
 //
-// If v is nil or not a pointer, UnmarshalPartial returns [InvalidUnmarshalError].
+// If v is nil or not a pointer, UnmarshalWithByteCount returns [InvalidUnmarshalError].
 //
 // # Possible Errors
 //
@@ -92,7 +92,7 @@ func Unmarshal(data []byte, v any) error {
 //
 //   - [SyntaxError]: Other structural errors in the BONJSON data (e.g.,
 //     non-string object keys).
-func UnmarshalPartial(data []byte, v any) (int, error) {
+func UnmarshalWithByteCount(data []byte, v any) (int, error) {
 	d := newDecodeState()
 	defer decodeStatePool.Put(d)
 
