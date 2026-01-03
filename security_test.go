@@ -50,10 +50,8 @@ func TestDuplicateKeyRejection(t *testing.T) {
 	}
 }
 
-func TestDuplicateKeyNormalized(t *testing.T) {
-	// Test that duplicate detection uses normalized (case-folded) keys
-	// This depends on implementation - some normalize, some don't
-	// At minimum, exact duplicates must be detected
+func TestDuplicateKeyExact(t *testing.T) {
+	// Test that exact duplicate keys are detected
 
 	var buf bytes.Buffer
 	buf.WriteByte(typeObjectStart)
@@ -191,14 +189,14 @@ func TestChunkingLimitDefault(t *testing.T) {
 	}
 }
 
-func TestChunkingWithinLimit(t *testing.T) {
+func TestSetMaxChunksMethod(t *testing.T) {
 	// Verify SetMaxChunks method exists and can be called
 	dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
-	dec.SetMaxChunks(1000) // allow more chunks
+	dec.SetMaxChunks(1000)
 
 	var v any
 	if err := dec.Decode(&v); err != nil {
-		t.Errorf("SetMaxChunks decode error: %v", err)
+		t.Errorf("Decode after SetMaxChunks error: %v", err)
 	}
 }
 
@@ -207,8 +205,8 @@ func TestChunkingWithinLimit(t *testing.T) {
 // Security Rule: Reject NaN and Infinity values
 // ============================================================================
 
-func TestNaNInfinityRejectionOnDecode(t *testing.T) {
-	// Big number with NaN special value
+func TestBigNumberSpecialValuesRejectionOnDecode(t *testing.T) {
+	// Big number special values (NaN, Infinity) should be rejected
 	tests := []struct {
 		name    string
 		special byte

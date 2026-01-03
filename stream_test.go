@@ -6,6 +6,7 @@ package bonjson
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -186,8 +187,8 @@ func TestDecoderBuffered(t *testing.T) {
 // Decoder Options Tests
 // ============================================================================
 
-func TestDecoderNativeNumericTypes(t *testing.T) {
-	// Test that Token() returns native types
+func TestDecoderTokenReturnsNativeTypes(t *testing.T) {
+	// Test that Token() returns native numeric types (float64, int64, uint64)
 
 	// Float value
 	data, _ := Marshal(123.456)
@@ -760,7 +761,7 @@ func TestStreamDecoderFloatTypes(t *testing.T) {
 func TestStreamDecoderShortStrings(t *testing.T) {
 	// Test all short string lengths (0-15 bytes)
 	for length := 0; length <= 15; length++ {
-		t.Run(strings.Repeat("x", length), func(t *testing.T) {
+		t.Run(fmt.Sprintf("length_%d", length), func(t *testing.T) {
 			s := strings.Repeat("a", length)
 			data, _ := Marshal(s)
 
@@ -798,7 +799,7 @@ func TestStreamDecoderLongStrings(t *testing.T) {
 	}
 
 	for _, size := range sizes {
-		t.Run(strings.Repeat("x", 10), func(t *testing.T) {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
 			s := strings.Repeat("x", size)
 			data, err := Marshal(s)
 			if err != nil {
