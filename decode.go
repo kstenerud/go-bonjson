@@ -826,7 +826,7 @@ func (d *decodeState) storeBool(val bool, v reflect.Value, ut encoding.TextUnmar
 	return nil
 }
 
-func (d *decodeState) storeNull(v reflect.Value, pv reflect.Value) error {
+func (d *decodeState) storeNull(v reflect.Value, _ reflect.Value) error {
 	if !v.IsValid() {
 		return nil
 	}
@@ -838,7 +838,7 @@ func (d *decodeState) storeNull(v reflect.Value, pv reflect.Value) error {
 	return nil
 }
 
-func (d *decodeState) decodeArray(v reflect.Value, pv reflect.Value) error {
+func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 	// Check depth
 	d.currentDepth++
 	if d.currentDepth > d.maxDepth {
@@ -917,7 +917,7 @@ func (d *decodeState) decodeArray(v reflect.Value, pv reflect.Value) error {
 
 var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
-func (d *decodeState) decodeObject(v reflect.Value, pv reflect.Value) error {
+func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
 	// Check depth
 	d.currentDepth++
 	if d.currentDepth > d.maxDepth {
