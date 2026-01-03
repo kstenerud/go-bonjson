@@ -26,9 +26,9 @@ type Decoder struct {
 // NewDecoder returns a new decoder that reads from r.
 func NewDecoder(r io.Reader) *Decoder {
 	dec := &Decoder{r: r, buf: make([]byte, 0, 512)}
-	dec.d.maxStringLength = defaultMaxStringLength
-	dec.d.maxDepth = defaultMaxContainerDepth
-	dec.d.maxChunks = defaultMaxChunks
+	dec.d.maxAllowedStringLength = defaultMaxStringLength
+	dec.d.maxAllowedContainerDepth = defaultMaxContainerDepth
+	dec.d.maxAllowedChunks = defaultMaxChunks
 	return dec
 }
 
@@ -39,7 +39,7 @@ func (dec *Decoder) DisallowUnknownFields() { dec.d.disallowUnknownFields = true
 
 // SetMaxChunks sets the maximum number of chunks allowed per string value.
 // The default is 100. Set to 0 to allow unlimited chunks (not recommended).
-func (dec *Decoder) SetMaxChunks(n int) { dec.d.maxChunks = n }
+func (dec *Decoder) SetMaxChunks(n int) { dec.d.maxAllowedChunks = n }
 
 // AllowNUL enables NUL characters in strings.
 // By default, NUL characters are forbidden for security.
@@ -47,11 +47,11 @@ func (dec *Decoder) AllowNUL() { dec.d.allowNUL = true }
 
 // SetMaxStringLength sets the maximum allowed string length in bytes.
 // The default is 10 MB. Set to 0 to allow unlimited length (not recommended).
-func (dec *Decoder) SetMaxStringLength(n int64) { dec.d.maxStringLength = n }
+func (dec *Decoder) SetMaxStringLength(n int64) { dec.d.maxAllowedStringLength = n }
 
 // SetMaxDepth sets the maximum allowed nesting depth for arrays and objects.
 // The default is 1000. Set to 0 to allow unlimited depth (not recommended).
-func (dec *Decoder) SetMaxDepth(n int) { dec.d.maxDepth = n }
+func (dec *Decoder) SetMaxDepth(n int) { dec.d.maxAllowedContainerDepth = n }
 
 // Decode reads the next BONJSON-encoded value from its
 // input and stores it in the value pointed to by v.
@@ -434,7 +434,7 @@ func (dec *Decoder) Token() (Token, error) {
 			return nil, err
 		}
 		// Decode the string
-		s, _, err := decodeLongString(dec.buf, dec.d.maxChunks, dec.d.maxStringLength)
+		s, _, err := decodeLongString(dec.buf, dec.d.maxAllowedChunks, dec.d.maxAllowedStringLength)
 		if err != nil {
 			return nil, err
 		}

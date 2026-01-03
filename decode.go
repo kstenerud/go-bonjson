@@ -14,7 +14,6 @@ import (
 	"math/big"
 	"reflect"
 	"strconv"
-	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -58,29 +57,22 @@ type Unmarshaler interface {
 
 // decodeState represents the state while decoding a BONJSON value.
 type decodeState struct {
-	data   []byte
-	off    int  // next read offset in data
-	opcode byte // last read type code
+	data           []byte
+	offsetIntoData int
+	containerDepth int
 
-	savedError            error
-	disallowUnknownFields bool
-	maxChunks             int
-	allowNUL              bool
-	maxStringLength       int64
-	maxDepth              int
-	currentDepth          int
+	disallowUnknownFields    bool
+	allowNUL                 bool
+	maxAllowedChunks         int
+	maxAllowedStringLength   int64
+	maxAllowedContainerDepth int
 
 	// Stack of boolean slices for duplicate key detection in nested structs.
 	// Using field indices is more efficient than map lookups for structs.
 	seenFieldsStack [][]bool
 	seenFieldsDepth int
 
-	errorContext *errorContext
-}
-
-type errorContext struct {
-	Struct     reflect.Type
-	FieldStack []string
+	savedError error
 }
 
 var decodeStatePool = sync.Pool{
@@ -93,11 +85,11 @@ func newDecodeState() *decodeState {
 	d := decodeStatePool.Get().(*decodeState)
 	d.savedError = nil
 	d.disallowUnknownFields = false
-	d.maxChunks = defaultMaxChunks
+	d.maxAllowedChunks = defaultMaxChunks
 	d.allowNUL = false
-	d.maxStringLength = defaultMaxStringLength
-	d.maxDepth = defaultMaxContainerDepth
-	d.currentDepth = 0
+	d.maxAllowedStringLength = defaultMaxStringLength
+	d.maxAllowedContainerDepth = defaultMaxContainerDepth
+	d.containerDepth = 0
 	d.seenFieldsDepth = 0
 	return d
 }
@@ -129,33 +121,14 @@ func (d *decodeState) popSeenFields() {
 
 func (d *decodeState) init(data []byte) {
 	d.data = data
-	d.off = 0
+	d.offsetIntoData = 0
 	d.savedError = nil
-	if d.errorContext != nil {
-		d.errorContext.Struct = nil
-		d.errorContext.FieldStack = d.errorContext.FieldStack[:0]
-	}
 }
 
 func (d *decodeState) saveError(err error) {
 	if d.savedError == nil {
-		d.savedError = d.addErrorContext(err)
+		d.savedError = err
 	}
-}
-
-func (d *decodeState) addErrorContext(err error) error {
-	if d.errorContext != nil && (d.errorContext.Struct != nil || len(d.errorContext.FieldStack) > 0) {
-		switch err := err.(type) {
-		case *UnmarshalTypeError:
-			err.Struct = d.errorContext.Struct.Name()
-			fieldStack := d.errorContext.FieldStack
-			if err.Field != "" {
-				fieldStack = append(fieldStack, err.Field)
-			}
-			err.Field = strings.Join(fieldStack, ".")
-		}
-	}
-	return err
 }
 
 func (d *decodeState) unmarshal(v any) error {
@@ -166,12 +139,12 @@ func (d *decodeState) unmarshal(v any) error {
 
 	err := d.value(rv)
 	if err != nil {
-		return d.addErrorContext(err)
+		return err
 	}
 
 	// Check for trailing data
-	if d.off < len(d.data) {
-		return &SyntaxError{msg: "trailing data after value", Offset: int64(d.off)}
+	if d.offsetIntoData < len(d.data) {
+		return &SyntaxError{msg: "trailing data after value", Offset: int64(d.offsetIntoData)}
 	}
 
 	return d.savedError
@@ -179,20 +152,20 @@ func (d *decodeState) unmarshal(v any) error {
 
 // readByte reads a single byte from the input
 func (d *decodeState) readByte() (byte, error) {
-	if d.off >= len(d.data) {
-		return 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: int64(d.off)}
+	if d.offsetIntoData >= len(d.data) {
+		return 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: int64(d.offsetIntoData)}
 	}
-	b := d.data[d.off]
-	d.off++
+	b := d.data[d.offsetIntoData]
+	d.offsetIntoData++
 	return b, nil
 }
 
 // peekByte peeks at the next byte without consuming it
 func (d *decodeState) peekByte() (byte, error) {
-	if d.off >= len(d.data) {
-		return 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: int64(d.off)}
+	if d.offsetIntoData >= len(d.data) {
+		return 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: int64(d.offsetIntoData)}
 	}
-	return d.data[d.off], nil
+	return d.data[d.offsetIntoData], nil
 }
 
 // value decodes a BONJSON value into v
@@ -201,7 +174,6 @@ func (d *decodeState) value(v reflect.Value) error {
 	if err != nil {
 		return err
 	}
-	d.opcode = tc
 	return d.decodeValue(tc, v)
 }
 
@@ -216,11 +188,11 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 	u, ut, pv := indirect(v, tc == typeNull)
 	if u != nil {
 		// Need to read the entire value for the unmarshaler
-		start := d.off - 1
+		start := d.offsetIntoData - 1
 		if err := d.skipValue(tc); err != nil {
 			return err
 		}
-		return u.UnmarshalBONJSON(d.data[start:d.off])
+		return u.UnmarshalBONJSON(d.data[start:d.offsetIntoData])
 	}
 
 	switch {
@@ -235,27 +207,27 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		// Unsigned integer
 		n := int(tc&0x07) + 1
-		if d.off+n > len(d.data) {
-			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+n > len(d.data) {
+			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
 		var val uint64
 		for i := 0; i < n; i++ {
-			val |= uint64(d.data[d.off+i]) << (i * 8)
+			val |= uint64(d.data[d.offsetIntoData+i]) << (i * 8)
 		}
-		d.off += n
+		d.offsetIntoData += n
 		return d.storeUint(val, pv, ut)
 
 	case tc >= typeSintBase && tc <= typeSintBase+7:
 		// Signed integer
 		n := int(tc&0x07) + 1
-		if d.off+n > len(d.data) {
-			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+n > len(d.data) {
+			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
 		var val uint64
 		for i := 0; i < n; i++ {
-			val |= uint64(d.data[d.off+i]) << (i * 8)
+			val |= uint64(d.data[d.offsetIntoData+i]) << (i * 8)
 		}
-		d.off += n
+		d.offsetIntoData += n
 		// Sign extend
 		signedVal := int64(val)
 		if n < 8 {
@@ -268,35 +240,35 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 		return d.storeInt(signedVal, pv, ut)
 
 	case tc == typeFloat16:
-		f, err := decodeFloat16(d.data[d.off:])
+		f, err := decodeFloat16(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
-		d.off += 2
+		d.offsetIntoData += 2
 		return d.storeFloat(f, pv, ut)
 
 	case tc == typeFloat32:
-		f, err := decodeFloat32(d.data[d.off:])
+		f, err := decodeFloat32(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
-		d.off += 4
+		d.offsetIntoData += 4
 		return d.storeFloat(f, pv, ut)
 
 	case tc == typeFloat64:
-		f, err := decodeFloat64(d.data[d.off:])
+		f, err := decodeFloat64(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
-		d.off += 8
+		d.offsetIntoData += 8
 		return d.storeFloat(f, pv, ut)
 
 	case tc == typeBigNumber:
-		bn, n, err := decodeBigNumber(d.data[d.off:])
+		bn, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
-		d.off += n
+		d.offsetIntoData += n
 		// For *big.Int and *big.Float, use the original value v to preserve type info
 		// since indirect() returns an invalid pv when TextUnmarshaler is found
 		return d.storeBigNumber(bn, v, pv, ut)
@@ -304,19 +276,19 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
 		// Short string
 		length := int(tc & 0x0f)
-		if d.off+length > len(d.data) {
-			return &TruncatedDataError{Expected: length, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+length > len(d.data) {
+			return &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		s := d.data[d.off : d.off+length]
-		d.off += length
+		s := d.data[d.offsetIntoData : d.offsetIntoData+length]
+		d.offsetIntoData += length
 		return d.storeString(s, pv, ut)
 
 	case tc == typeLongString:
-		s, n, err := decodeLongString(d.data[d.off:], d.maxChunks, d.maxStringLength)
+		s, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedChunks, d.maxAllowedStringLength)
 		if err != nil {
 			return err
 		}
-		d.off += n
+		d.offsetIntoData += n
 		return d.storeString(s, pv, ut)
 
 	case tc == typeNull:
@@ -335,7 +307,7 @@ func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
 		return d.decodeObject(pv, v)
 
 	default:
-		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.off - 1)}
+		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.offsetIntoData - 1)}
 	}
 }
 
@@ -425,27 +397,27 @@ func (d *decodeState) storeInt(val int64, v reflect.Value, ut encoding.TextUnmar
 			v.Set(reflect.ValueOf(val))
 			return nil
 		}
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		if v.OverflowInt(val) {
-			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatInt(val, 10), Type: v.Type(), Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatInt(val, 10), Type: v.Type(), Offset: int64(d.offsetIntoData)})
 			return nil
 		}
 		v.SetInt(val)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		if val < 0 {
-			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatInt(val, 10), Type: v.Type(), Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatInt(val, 10), Type: v.Type(), Offset: int64(d.offsetIntoData)})
 			return nil
 		}
 		if v.OverflowUint(uint64(val)) {
-			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatInt(val, 10), Type: v.Type(), Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatInt(val, 10), Type: v.Type(), Offset: int64(d.offsetIntoData)})
 			return nil
 		}
 		v.SetUint(uint64(val))
 	case reflect.Float32, reflect.Float64:
 		v.SetFloat(float64(val))
 	default:
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	}
 	return nil
 }
@@ -466,23 +438,23 @@ func (d *decodeState) storeUint(val uint64, v reflect.Value, ut encoding.TextUnm
 			v.Set(reflect.ValueOf(val))
 			return nil
 		}
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		if val > uint64(^uint(0)>>1) || v.OverflowInt(int64(val)) {
-			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatUint(val, 10), Type: v.Type(), Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatUint(val, 10), Type: v.Type(), Offset: int64(d.offsetIntoData)})
 			return nil
 		}
 		v.SetInt(int64(val))
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		if v.OverflowUint(val) {
-			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatUint(val, 10), Type: v.Type(), Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatUint(val, 10), Type: v.Type(), Offset: int64(d.offsetIntoData)})
 			return nil
 		}
 		v.SetUint(val)
 	case reflect.Float32, reflect.Float64:
 		v.SetFloat(float64(val))
 	default:
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	}
 	return nil
 }
@@ -502,29 +474,29 @@ func (d *decodeState) storeFloat(val float64, v reflect.Value, ut encoding.TextU
 			v.Set(reflect.ValueOf(val))
 			return nil
 		}
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	case reflect.Float32, reflect.Float64:
 		if v.OverflowFloat(val) {
-			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatFloat(val, 'g', -1, 64), Type: v.Type(), Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatFloat(val, 'g', -1, 64), Type: v.Type(), Offset: int64(d.offsetIntoData)})
 			return nil
 		}
 		v.SetFloat(val)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i := int64(val)
 		if float64(i) != val || v.OverflowInt(i) {
-			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatFloat(val, 'g', -1, 64), Type: v.Type(), Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatFloat(val, 'g', -1, 64), Type: v.Type(), Offset: int64(d.offsetIntoData)})
 			return nil
 		}
 		v.SetInt(i)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		u := uint64(val)
 		if float64(u) != val || v.OverflowUint(u) {
-			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatFloat(val, 'g', -1, 64), Type: v.Type(), Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "number " + strconv.FormatFloat(val, 'g', -1, 64), Type: v.Type(), Offset: int64(d.offsetIntoData)})
 			return nil
 		}
 		v.SetUint(u)
 	default:
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	}
 	return nil
 }
@@ -697,7 +669,7 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 			v.Set(reflect.ValueOf(string(s)))
 			return nil
 		}
-		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	case reflect.String:
 		v.SetString(string(s))
 	case reflect.Slice:
@@ -712,9 +684,9 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 			v.SetBytes(b[:n])
 			return nil
 		}
-		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	default:
-		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	}
 	return nil
 }
@@ -723,7 +695,7 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 // Uses SIMD-optimized stdlib functions for both checks.
 // The loop only runs on the error path to find the exact invalid byte position.
 func (d *decodeState) validateString(s []byte) error {
-	baseOff := d.off - len(s)
+	baseOff := d.offsetIntoData - len(s)
 
 	if utf8.Valid(s) {
 		if !d.allowNUL {
@@ -770,11 +742,11 @@ func (d *decodeState) storeBool(val bool, v reflect.Value, ut encoding.TextUnmar
 			v.Set(reflect.ValueOf(val))
 			return nil
 		}
-		d.saveError(&UnmarshalTypeError{Value: "bool", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "bool", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	case reflect.Bool:
 		v.SetBool(val)
 	default:
-		d.saveError(&UnmarshalTypeError{Value: "bool", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "bool", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	}
 	return nil
 }
@@ -793,11 +765,11 @@ func (d *decodeState) storeNull(v reflect.Value, _ reflect.Value) error {
 
 func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 	// Check depth
-	d.currentDepth++
-	if d.currentDepth > d.maxDepth {
-		return &MaxDepthError{Depth: d.maxDepth, Offset: int64(d.off)}
+	d.containerDepth++
+	if d.containerDepth > d.maxAllowedContainerDepth {
+		return &MaxDepthError{Depth: d.maxAllowedContainerDepth, Offset: int64(d.offsetIntoData)}
 	}
-	defer func() { d.currentDepth-- }()
+	defer func() { d.containerDepth-- }()
 
 	// Handle interface{}
 	if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
@@ -814,7 +786,7 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 	case reflect.Array, reflect.Slice:
 		// ok
 	default:
-		d.saveError(&UnmarshalTypeError{Value: "array", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "array", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 		return d.skipContainer()
 	}
 
@@ -826,7 +798,7 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 		}
 
 		if tc == typeContainerEnd {
-			d.off++ // consume the end marker
+			d.offsetIntoData++ // consume the end marker
 			break
 		}
 
@@ -872,11 +844,11 @@ var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
 func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
 	// Check depth
-	d.currentDepth++
-	if d.currentDepth > d.maxDepth {
-		return &MaxDepthError{Depth: d.maxDepth, Offset: int64(d.off)}
+	d.containerDepth++
+	if d.containerDepth > d.maxAllowedContainerDepth {
+		return &MaxDepthError{Depth: d.maxAllowedContainerDepth, Offset: int64(d.offsetIntoData)}
 	}
-	defer func() { d.currentDepth-- }()
+	defer func() { d.containerDepth-- }()
 
 	// Handle interface{}
 	if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
@@ -894,7 +866,7 @@ func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
 	case reflect.Struct:
 		return d.decodeObjectToStruct(v)
 	default:
-		d.saveError(&UnmarshalTypeError{Value: "object", Type: v.Type(), Offset: int64(d.off)})
+		d.saveError(&UnmarshalTypeError{Value: "object", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 		return d.skipContainer()
 	}
 }
@@ -910,7 +882,7 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 	default:
 		if !reflect.PointerTo(kt).Implements(textUnmarshalerType) {
-			d.saveError(&UnmarshalTypeError{Value: "object", Type: t, Offset: int64(d.off)})
+			d.saveError(&UnmarshalTypeError{Value: "object", Type: t, Offset: int64(d.offsetIntoData)})
 			return d.skipContainer()
 		}
 	}
@@ -929,12 +901,12 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 		}
 
 		if tc == typeContainerEnd {
-			d.off++
+			d.offsetIntoData++
 			break
 		}
 
 		// Read key (must be a string)
-		keyStart := d.off
+		keyStart := d.offsetIntoData
 		key, err := d.readString()
 		if err != nil {
 			return err
@@ -1010,12 +982,12 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 		}
 
 		if tc == typeContainerEnd {
-			d.off++
+			d.offsetIntoData++
 			break
 		}
 
 		// Read key (must be a string)
-		keyStart := d.off
+		keyStart := d.offsetIntoData
 		key, err := d.readString()
 		if err != nil {
 			return err
@@ -1079,11 +1051,11 @@ func (d *decodeState) readString() ([]byte, error) {
 	switch {
 	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
 		length := int(tc & 0x0f)
-		if d.off+length > len(d.data) {
-			return nil, &TruncatedDataError{Expected: length, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+length > len(d.data) {
+			return nil, &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		s := d.data[d.off : d.off+length]
-		d.off += length
+		s := d.data[d.offsetIntoData : d.offsetIntoData+length]
+		d.offsetIntoData += length
 		// Combined UTF-8 and NUL validation
 		if err := d.validateString(s); err != nil {
 			return nil, err
@@ -1091,11 +1063,11 @@ func (d *decodeState) readString() ([]byte, error) {
 		return s, nil
 
 	case tc == typeLongString:
-		s, n, err := decodeLongString(d.data[d.off:], d.maxChunks, d.maxStringLength)
+		s, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedChunks, d.maxAllowedStringLength)
 		if err != nil {
 			return nil, err
 		}
-		d.off += n
+		d.offsetIntoData += n
 		// Combined UTF-8 and NUL validation
 		if err := d.validateString(s); err != nil {
 			return nil, err
@@ -1103,7 +1075,7 @@ func (d *decodeState) readString() ([]byte, error) {
 		return s, nil
 
 	default:
-		return nil, &SyntaxError{msg: "expected string", Offset: int64(d.off - 1)}
+		return nil, &SyntaxError{msg: "expected string", Offset: int64(d.offsetIntoData - 1)}
 	}
 }
 
@@ -1116,63 +1088,63 @@ func (d *decodeState) skipValue(tc byte) error {
 		return nil
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		n := int(tc&0x07) + 1
-		if d.off+n > len(d.data) {
-			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+n > len(d.data) {
+			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		d.off += n
+		d.offsetIntoData += n
 		return nil
 	case tc >= typeSintBase && tc <= typeSintBase+7:
 		n := int(tc&0x07) + 1
-		if d.off+n > len(d.data) {
-			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+n > len(d.data) {
+			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		d.off += n
+		d.offsetIntoData += n
 		return nil
 	case tc == typeFloat16:
-		if d.off+2 > len(d.data) {
-			return &TruncatedDataError{Expected: 2, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+2 > len(d.data) {
+			return &TruncatedDataError{Expected: 2, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		d.off += 2
+		d.offsetIntoData += 2
 		return nil
 	case tc == typeFloat32:
-		if d.off+4 > len(d.data) {
-			return &TruncatedDataError{Expected: 4, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+4 > len(d.data) {
+			return &TruncatedDataError{Expected: 4, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		d.off += 4
+		d.offsetIntoData += 4
 		return nil
 	case tc == typeFloat64:
-		if d.off+8 > len(d.data) {
-			return &TruncatedDataError{Expected: 8, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+8 > len(d.data) {
+			return &TruncatedDataError{Expected: 8, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		d.off += 8
+		d.offsetIntoData += 8
 		return nil
 	case tc == typeBigNumber:
-		_, n, err := decodeBigNumber(d.data[d.off:])
+		_, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
-		d.off += n
+		d.offsetIntoData += n
 		return nil
 	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
 		length := int(tc & 0x0f)
-		if d.off+length > len(d.data) {
-			return &TruncatedDataError{Expected: length, Got: len(d.data) - d.off, Offset: int64(d.off)}
+		if d.offsetIntoData+length > len(d.data) {
+			return &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		d.off += length
+		d.offsetIntoData += length
 		return nil
 	case tc == typeLongString:
-		_, n, err := decodeLongString(d.data[d.off:], d.maxChunks, d.maxStringLength)
+		_, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedChunks, d.maxAllowedStringLength)
 		if err != nil {
 			return err
 		}
-		d.off += n
+		d.offsetIntoData += n
 		return nil
 	case tc == typeNull, tc == typeFalse, tc == typeTrue:
 		return nil
 	case tc == typeArrayStart, tc == typeObjectStart:
 		return d.skipContainer()
 	default:
-		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.off - 1)}
+		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.offsetIntoData - 1)}
 	}
 }
 
@@ -1208,7 +1180,7 @@ func (d *decodeState) arrayInterface() []any {
 			return v
 		}
 		if tc == typeContainerEnd {
-			d.off++
+			d.offsetIntoData++
 			break
 		}
 
@@ -1234,11 +1206,11 @@ func (d *decodeState) objectInterface() map[string]any {
 			return m
 		}
 		if tc == typeContainerEnd {
-			d.off++
+			d.offsetIntoData++
 			break
 		}
 
-		keyStart := d.off
+		keyStart := d.offsetIntoData
 		key, err := d.readString()
 		if err != nil {
 			d.saveError(err)

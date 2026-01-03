@@ -144,5 +144,5 @@ func Valid(data []byte) bool {
 	if err != nil {
 		return false
 	}
-	return d.off == len(data)
+	return d.offsetIntoData == len(data)
 }
