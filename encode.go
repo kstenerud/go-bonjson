@@ -191,21 +191,21 @@ var primitiveEncoders = [...]encoderFunc{
 
 // primitiveTypes maps Kind to the canonical primitive type for fast comparison.
 var primitiveTypes = [...]reflect.Type{
-	reflect.Bool:    reflect.TypeFor[bool](),
-	reflect.Int:     reflect.TypeFor[int](),
-	reflect.Int8:    reflect.TypeFor[int8](),
-	reflect.Int16:   reflect.TypeFor[int16](),
-	reflect.Int32:   reflect.TypeFor[int32](),
-	reflect.Int64:   reflect.TypeFor[int64](),
-	reflect.Uint:    reflect.TypeFor[uint](),
-	reflect.Uint8:   reflect.TypeFor[uint8](),
-	reflect.Uint16:  reflect.TypeFor[uint16](),
-	reflect.Uint32:  reflect.TypeFor[uint32](),
-	reflect.Uint64:  reflect.TypeFor[uint64](),
-	reflect.Uintptr: reflect.TypeFor[uintptr](),
-	reflect.Float32: reflect.TypeFor[float32](),
-	reflect.Float64: reflect.TypeFor[float64](),
-	reflect.String:  reflect.TypeFor[string](),
+	reflect.Bool:    reflect.TypeOf(false),
+	reflect.Int:     reflect.TypeOf(int(0)),
+	reflect.Int8:    reflect.TypeOf(int8(0)),
+	reflect.Int16:   reflect.TypeOf(int16(0)),
+	reflect.Int32:   reflect.TypeOf(int32(0)),
+	reflect.Int64:   reflect.TypeOf(int64(0)),
+	reflect.Uint:    reflect.TypeOf(uint(0)),
+	reflect.Uint8:   reflect.TypeOf(uint8(0)),
+	reflect.Uint16:  reflect.TypeOf(uint16(0)),
+	reflect.Uint32:  reflect.TypeOf(uint32(0)),
+	reflect.Uint64:  reflect.TypeOf(uint64(0)),
+	reflect.Uintptr: reflect.TypeOf(uintptr(0)),
+	reflect.Float32: reflect.TypeOf(float32(0)),
+	reflect.Float64: reflect.TypeOf(float64(0)),
+	reflect.String:  reflect.TypeOf(""),
 }
 
 func valueEncoder(v reflect.Value) encoderFunc {
@@ -248,10 +248,10 @@ func typeEncoder(t reflect.Type) encoderFunc {
 }
 
 var (
-	marshalerType     = reflect.TypeFor[Marshaler]()
-	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
-	bigIntType        = reflect.TypeFor[*big.Int]()
-	bigFloatType      = reflect.TypeFor[*big.Float]()
+	marshalerType     = reflect.TypeOf((*Marshaler)(nil)).Elem()
+	textMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+	bigIntType        = reflect.TypeOf((*big.Int)(nil))
+	bigFloatType      = reflect.TypeOf((*big.Float)(nil))
 )
 
 // newTypeEncoder constructs an encoderFunc for a type.
@@ -316,7 +316,7 @@ func marshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		e.WriteByte(typeNull)
 		return
 	}
-	m, ok := reflect.TypeAssert[Marshaler](v)
+	m, ok := v.Interface().(Marshaler)
 	if !ok {
 		e.WriteByte(typeNull)
 		return
@@ -335,7 +335,7 @@ func addrMarshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		e.WriteByte(typeNull)
 		return
 	}
-	m, _ := reflect.TypeAssert[Marshaler](va)
+	m := va.Interface().(Marshaler)
 	b, err := m.MarshalBONJSON()
 	if err != nil {
 		e.error(&MarshalerError{v.Type(), err, "MarshalBONJSON"})
@@ -348,7 +348,7 @@ func textMarshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		e.WriteByte(typeNull)
 		return
 	}
-	m, ok := reflect.TypeAssert[encoding.TextMarshaler](v)
+	m, ok := v.Interface().(encoding.TextMarshaler)
 	if !ok {
 		e.WriteByte(typeNull)
 		return
@@ -366,7 +366,7 @@ func addrTextMarshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		e.WriteByte(typeNull)
 		return
 	}
-	m, _ := reflect.TypeAssert[encoding.TextMarshaler](va)
+	m := va.Interface().(encoding.TextMarshaler)
 	b, err := m.MarshalText()
 	if err != nil {
 		e.error(&MarshalerError{v.Type(), err, "MarshalText"})
@@ -1019,7 +1019,7 @@ func resolveKeyName(k reflect.Value) (string, error) {
 	if k.Kind() == reflect.String {
 		return k.String(), nil
 	}
-	if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](k); ok {
+	if tm, ok := k.Interface().(encoding.TextMarshaler); ok {
 		if k.Kind() == reflect.Pointer && k.IsNil() {
 			return "", nil
 		}

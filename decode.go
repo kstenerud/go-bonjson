@@ -400,11 +400,11 @@ func dereferenceAndGetUnmarshaler(v reflect.Value, decodingNull bool) (Unmarshal
 			v.Set(reflect.New(eType))
 		}
 		if vType.NumMethod() > 0 && v.CanInterface() {
-			if u, ok := reflect.TypeAssert[Unmarshaler](v); ok {
+			if u, ok := v.Interface().(Unmarshaler); ok {
 				return u, nil, reflect.Value{}
 			}
 			if !decodingNull {
-				if u, ok := reflect.TypeAssert[encoding.TextUnmarshaler](v); ok {
+				if u, ok := v.Interface().(encoding.TextUnmarshaler); ok {
 					return nil, u, reflect.Value{}
 				}
 			}
@@ -547,11 +547,11 @@ func (d *decodeState) storeFloat(val float64, v reflect.Value, ut encoding.TextU
 func (d *decodeState) storeBigNumber(bn *BigNumber, origV reflect.Value, pv reflect.Value, ut encoding.TextUnmarshaler) error {
 	// Check for *big.Int target first - preserve exact integer value
 	// Use origV since pv may be invalid when TextUnmarshaler is found
-	if origV.IsValid() && origV.Kind() == reflect.Pointer && origV.Type().Elem() == reflect.TypeFor[big.Int]() {
+	if origV.IsValid() && origV.Kind() == reflect.Pointer && origV.Type() == bigIntPtrType {
 		return d.storeBigNumberToBigInt(bn, origV)
 	}
 	// Check for *big.Float target - preserve arbitrary precision
-	if origV.IsValid() && origV.Kind() == reflect.Pointer && origV.Type().Elem() == reflect.TypeFor[big.Float]() {
+	if origV.IsValid() && origV.Kind() == reflect.Pointer && origV.Type() == bigFloatPtrType {
 		return d.storeBigNumberToBigFloat(bn, origV)
 	}
 
@@ -883,7 +883,11 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 	return nil
 }
 
-var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+var (
+	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
+	bigIntPtrType       = reflect.TypeOf((*big.Int)(nil))
+	bigFloatPtrType     = reflect.TypeOf((*big.Float)(nil))
+)
 
 func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
 	// Check depth

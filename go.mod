@@ -1,3 +1,3 @@
 module github.com/kstenerud/go-bonjson
 
-go 1.25
+go 1.21

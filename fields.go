@@ -93,7 +93,7 @@ type isZeroer interface {
 	IsZero() bool
 }
 
-var isZeroerType = reflect.TypeFor[isZeroer]()
+var isZeroerType = reflect.TypeOf((*isZeroer)(nil)).Elem()
 
 func typeFields(t reflect.Type) structFields {
 	// Anonymous fields to explore at the current level and the next.
