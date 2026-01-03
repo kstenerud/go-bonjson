@@ -432,10 +432,8 @@ func bigIntToBigNumber(bi *big.Int) *BigNumber {
 	// If the number fits in 31 bytes, encode directly with exponent 0
 	if len(absBytes) <= 31 {
 		// Convert to little-endian
-		significand := make([]byte, len(absBytes))
-		for i, b := range absBytes {
-			significand[len(absBytes)-1-i] = b
-		}
+		significand := slices.Clone(absBytes)
+		slices.Reverse(significand)
 
 		return &BigNumber{
 			Significand: significand,
@@ -463,10 +461,8 @@ func bigIntToBigNumber(bi *big.Int) *BigNumber {
 	}
 
 	// Convert to little-endian
-	significand := make([]byte, len(sigBytes))
-	for i, b := range sigBytes {
-		significand[len(sigBytes)-1-i] = b
-	}
+	significand := slices.Clone(sigBytes)
+	slices.Reverse(significand)
 
 	return &BigNumber{
 		Significand: significand,
@@ -551,10 +547,8 @@ func bigFloatToBigNumber(bf *big.Float) *BigNumber {
 	sigBytes := sigInt.Bytes()
 
 	// Convert to little-endian
-	significand := make([]byte, len(sigBytes))
-	for i, b := range sigBytes {
-		significand[len(sigBytes)-1-i] = b
-	}
+	significand := slices.Clone(sigBytes)
+	slices.Reverse(significand)
 
 	return &BigNumber{
 		Significand: significand,
