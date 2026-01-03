@@ -405,6 +405,225 @@ func TestUnmarshalRejectsTrailingBytes(t *testing.T) {
 	}
 }
 
+func TestUnmarshalWithByteCountConcatenatedDocuments(t *testing.T) {
+	// Test decoding multiple concatenated BONJSON documents using UnmarshalWithByteCount.
+	// This demonstrates how to use the byte count and TrailingDataError to decode
+	// a stream of documents from a single byte slice.
+
+	// Create test values of various types
+	doc1 := 42
+	doc2 := "hello world"
+	doc3 := []int{1, 2, 3}
+	doc4 := map[string]string{"key": "value"}
+	doc5 := true
+
+	// Marshal each document
+	data1, _ := Marshal(doc1)
+	data2, _ := Marshal(doc2)
+	data3, _ := Marshal(doc3)
+	data4, _ := Marshal(doc4)
+	data5, _ := Marshal(doc5)
+
+	// Concatenate all documents into a single byte slice
+	concatenated := make([]byte, 0, len(data1)+len(data2)+len(data3)+len(data4)+len(data5))
+	concatenated = append(concatenated, data1...)
+	concatenated = append(concatenated, data2...)
+	concatenated = append(concatenated, data3...)
+	concatenated = append(concatenated, data4...)
+	concatenated = append(concatenated, data5...)
+
+	// Decode all documents one by one
+	remaining := concatenated
+	totalConsumed := 0
+
+	// Document 1: int
+	var got1 int
+	n, err := UnmarshalWithByteCount(remaining, &got1)
+	if err != nil {
+		var trailingErr *TrailingDataError
+		if !errors.As(err, &trailingErr) {
+			t.Fatalf("doc1: unexpected error type: %T: %v", err, err)
+		}
+		// TrailingDataError is expected since there's more data
+	}
+	if got1 != doc1 {
+		t.Errorf("doc1: got %v, want %v", got1, doc1)
+	}
+	if n != len(data1) {
+		t.Errorf("doc1: consumed %d bytes, want %d", n, len(data1))
+	}
+	remaining = remaining[n:]
+	totalConsumed += n
+
+	// Document 2: string
+	var got2 string
+	n, err = UnmarshalWithByteCount(remaining, &got2)
+	if err != nil {
+		var trailingErr *TrailingDataError
+		if !errors.As(err, &trailingErr) {
+			t.Fatalf("doc2: unexpected error type: %T: %v", err, err)
+		}
+	}
+	if got2 != doc2 {
+		t.Errorf("doc2: got %v, want %v", got2, doc2)
+	}
+	if n != len(data2) {
+		t.Errorf("doc2: consumed %d bytes, want %d", n, len(data2))
+	}
+	remaining = remaining[n:]
+	totalConsumed += n
+
+	// Document 3: []int
+	var got3 []int
+	n, err = UnmarshalWithByteCount(remaining, &got3)
+	if err != nil {
+		var trailingErr *TrailingDataError
+		if !errors.As(err, &trailingErr) {
+			t.Fatalf("doc3: unexpected error type: %T: %v", err, err)
+		}
+	}
+	if !reflect.DeepEqual(got3, doc3) {
+		t.Errorf("doc3: got %v, want %v", got3, doc3)
+	}
+	if n != len(data3) {
+		t.Errorf("doc3: consumed %d bytes, want %d", n, len(data3))
+	}
+	remaining = remaining[n:]
+	totalConsumed += n
+
+	// Document 4: map[string]string
+	var got4 map[string]string
+	n, err = UnmarshalWithByteCount(remaining, &got4)
+	if err != nil {
+		var trailingErr *TrailingDataError
+		if !errors.As(err, &trailingErr) {
+			t.Fatalf("doc4: unexpected error type: %T: %v", err, err)
+		}
+	}
+	if !reflect.DeepEqual(got4, doc4) {
+		t.Errorf("doc4: got %v, want %v", got4, doc4)
+	}
+	if n != len(data4) {
+		t.Errorf("doc4: consumed %d bytes, want %d", n, len(data4))
+	}
+	remaining = remaining[n:]
+	totalConsumed += n
+
+	// Document 5: bool (last document - no trailing data)
+	var got5 bool
+	n, err = UnmarshalWithByteCount(remaining, &got5)
+	if err != nil {
+		t.Fatalf("doc5: unexpected error: %v", err)
+	}
+	if got5 != doc5 {
+		t.Errorf("doc5: got %v, want %v", got5, doc5)
+	}
+	if n != len(data5) {
+		t.Errorf("doc5: consumed %d bytes, want %d", n, len(data5))
+	}
+	totalConsumed += n
+
+	// Verify we consumed all bytes
+	if totalConsumed != len(concatenated) {
+		t.Errorf("total consumed %d bytes, want %d", totalConsumed, len(concatenated))
+	}
+}
+
+func TestUnmarshalWithByteCountConcatenatedLoop(t *testing.T) {
+	// Test decoding concatenated documents in a loop pattern,
+	// which is the typical usage pattern for this API.
+
+	// Create and concatenate multiple integer documents
+	expected := []int{10, 20, 30, 40, 50}
+	var concatenated []byte
+	for _, v := range expected {
+		data, _ := Marshal(v)
+		concatenated = append(concatenated, data...)
+	}
+
+	// Decode using a loop
+	var results []int
+	remaining := concatenated
+
+	for len(remaining) > 0 {
+		var v int
+		n, err := UnmarshalWithByteCount(remaining, &v)
+
+		if err != nil {
+			var trailingErr *TrailingDataError
+			if errors.As(err, &trailingErr) {
+				// Expected when there are more documents
+				results = append(results, v)
+				remaining = remaining[n:]
+				continue
+			}
+			t.Fatalf("unexpected error: %T: %v", err, err)
+		}
+
+		// No error means this was the last document
+		results = append(results, v)
+		remaining = remaining[n:]
+	}
+
+	if !reflect.DeepEqual(results, expected) {
+		t.Errorf("got %v, want %v", results, expected)
+	}
+}
+
+func TestUnmarshalWithByteCountMixedTypes(t *testing.T) {
+	// Test decoding concatenated documents of mixed types into interface{}
+
+	// Create documents of different types
+	docs := []any{
+		int64(123),
+		"test string",
+		true,
+		nil,
+		[]any{int64(1), int64(2), int64(3)},
+	}
+
+	// Concatenate all documents
+	var concatenated []byte
+	for _, doc := range docs {
+		data, err := Marshal(doc)
+		if err != nil {
+			t.Fatalf("Marshal error: %v", err)
+		}
+		concatenated = append(concatenated, data...)
+	}
+
+	// Decode all documents
+	var results []any
+	remaining := concatenated
+
+	for len(remaining) > 0 {
+		var v any
+		n, err := UnmarshalWithByteCount(remaining, &v)
+
+		if err != nil {
+			var trailingErr *TrailingDataError
+			if !errors.As(err, &trailingErr) {
+				t.Fatalf("unexpected error: %T: %v", err, err)
+			}
+		}
+
+		results = append(results, v)
+		remaining = remaining[n:]
+	}
+
+	if len(results) != len(docs) {
+		t.Fatalf("got %d documents, want %d", len(results), len(docs))
+	}
+
+	// Verify each result (note: integers decode as int64)
+	for i, got := range results {
+		want := docs[i]
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("doc[%d]: got %v (%T), want %v (%T)", i, got, got, want, want)
+		}
+	}
+}
+
 func mustMarshal(v any) []byte {
 	data, err := Marshal(v)
 	if err != nil {
