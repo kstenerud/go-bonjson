@@ -80,7 +80,6 @@ type decodeState struct {
 	opcode byte // last read type code
 
 	savedError            error
-	useNumber             bool
 	disallowUnknownFields bool
 	allowChunking         bool
 	allowNUL              bool
@@ -110,7 +109,6 @@ var decodeStatePool = sync.Pool{
 func newDecodeState() *decodeState {
 	d := decodeStatePool.Get().(*decodeState)
 	d.savedError = nil
-	d.useNumber = false
 	d.disallowUnknownFields = false
 	d.allowChunking = false
 	d.allowNUL = false
@@ -440,11 +438,8 @@ func (d *decodeState) storeInt(val int64, v reflect.Value, ut encoding.TextUnmar
 	switch v.Kind() {
 	case reflect.Interface:
 		if v.NumMethod() == 0 {
-			if d.useNumber {
-				v.Set(reflect.ValueOf(Number(strconv.FormatInt(val, 10))))
-			} else {
-				v.Set(reflect.ValueOf(float64(val)))
-			}
+			// BONJSON preserves integer types natively, unlike JSON which uses float64
+			v.Set(reflect.ValueOf(val))
 			return nil
 		}
 		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
@@ -490,11 +485,8 @@ func (d *decodeState) storeUint(val uint64, v reflect.Value, ut encoding.TextUnm
 	switch v.Kind() {
 	case reflect.Interface:
 		if v.NumMethod() == 0 {
-			if d.useNumber {
-				v.Set(reflect.ValueOf(Number(strconv.FormatUint(val, 10))))
-			} else {
-				v.Set(reflect.ValueOf(float64(val)))
-			}
+			// BONJSON preserves integer types natively, unlike JSON which uses float64
+			v.Set(reflect.ValueOf(val))
 			return nil
 		}
 		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
@@ -536,11 +528,7 @@ func (d *decodeState) storeFloat(val float64, v reflect.Value, ut encoding.TextU
 	switch v.Kind() {
 	case reflect.Interface:
 		if v.NumMethod() == 0 {
-			if d.useNumber {
-				v.Set(reflect.ValueOf(Number(strconv.FormatFloat(val, 'g', -1, 64))))
-			} else {
-				v.Set(reflect.ValueOf(val))
-			}
+			v.Set(reflect.ValueOf(val))
 			return nil
 		}
 		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})

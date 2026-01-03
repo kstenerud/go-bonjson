@@ -186,25 +186,49 @@ func TestDecoderBuffered(t *testing.T) {
 // Decoder Options Tests
 // ============================================================================
 
-func TestDecoderUseNumber(t *testing.T) {
+func TestDecoderNativeNumericTypes(t *testing.T) {
+	// Test that Token() returns native types
+
+	// Float value
 	data, _ := Marshal(123.456)
-
 	dec := NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		t.Fatalf("Decode error: %v", err)
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	f, ok := tok.(float64)
+	if !ok {
+		t.Errorf("expected float64, got %T", tok)
+	} else if f != 123.456 {
+		t.Errorf("float value = %f, want 123.456", f)
 	}
 
-	n, ok := v.(Number)
+	// Signed integer
+	data2, _ := Marshal(-42)
+	dec2 := NewDecoder(bytes.NewReader(data2))
+	tok2, err := dec2.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	i, ok := tok2.(int64)
 	if !ok {
-		t.Errorf("expected Number, got %T", v)
-	} else {
-		f, _ := n.Float64()
-		if f != 123.456 {
-			t.Errorf("Number value = %f, want 123.456", f)
-		}
+		t.Errorf("expected int64, got %T", tok2)
+	} else if i != -42 {
+		t.Errorf("int value = %d, want -42", i)
+	}
+
+	// Unsigned integer
+	data3, _ := Marshal(uint64(12345678901234567890))
+	dec3 := NewDecoder(bytes.NewReader(data3))
+	tok3, err := dec3.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	u, ok := tok3.(uint64)
+	if !ok {
+		t.Errorf("expected uint64, got %T", tok3)
+	} else if u != 12345678901234567890 {
+		t.Errorf("uint value = %d, want 12345678901234567890", u)
 	}
 }
 

@@ -130,8 +130,8 @@ func TestUnmarshalInvalidTargetErrors(t *testing.T) {
 func TestUnmarshalTypeError(t *testing.T) {
 	tests := []struct {
 		name string
-		data any    // value to marshal
-		ptr  any    // target to unmarshal into
+		data any // value to marshal
+		ptr  any // target to unmarshal into
 	}{
 		{"string_to_int", "hello", new(int)},
 		{"int_to_string", 42, new(string)},
@@ -232,30 +232,40 @@ func TestDisallowUnknownFields(t *testing.T) {
 }
 
 // ============================================================================
-// UseNumber Tests
+// Native Numeric Types Tests
 // ============================================================================
 
-func TestUseNumber(t *testing.T) {
-	data, _ := Marshal(123.456)
+func TestNativeNumericTypes(t *testing.T) {
+	// Test that BONJSON preserves native integer types
 
-	// Default: numbers become float64
+	// Signed integer decodes to int64
+	data1, _ := Marshal(-42)
 	var v1 any
-	if err := Unmarshal(data, &v1); err != nil {
+	if err := Unmarshal(data1, &v1); err != nil {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
-	if _, ok := v1.(float64); !ok {
-		t.Errorf("default: expected float64, got %T", v1)
+	if _, ok := v1.(int64); !ok {
+		t.Errorf("signed int: expected int64, got %T", v1)
 	}
 
-	// With UseNumber: numbers become Number
-	dec := NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
+	// Large unsigned integer decodes to uint64
+	data2, _ := Marshal(uint64(1 << 62))
 	var v2 any
-	if err := dec.Decode(&v2); err != nil {
-		t.Fatalf("Decode error: %v", err)
+	if err := Unmarshal(data2, &v2); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
 	}
-	if _, ok := v2.(Number); !ok {
-		t.Errorf("UseNumber: expected Number, got %T", v2)
+	if _, ok := v2.(uint64); !ok {
+		t.Errorf("unsigned int: expected uint64, got %T", v2)
+	}
+
+	// Float decodes to float64
+	data3, _ := Marshal(123.456)
+	var v3 any
+	if err := Unmarshal(data3, &v3); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if _, ok := v3.(float64); !ok {
+		t.Errorf("float: expected float64, got %T", v3)
 	}
 }
 
@@ -426,10 +436,10 @@ func TestDecodeTruncatedData(t *testing.T) {
 		data []byte
 	}{
 		{"empty", []byte{}},
-		{"truncated_uint", []byte{typeUintBase + 3, 0x01, 0x02}}, // needs 4 bytes
-		{"truncated_float64", []byte{typeFloat64, 0x01, 0x02}},   // needs 8 bytes
+		{"truncated_uint", []byte{typeUintBase + 3, 0x01, 0x02}},        // needs 4 bytes
+		{"truncated_float64", []byte{typeFloat64, 0x01, 0x02}},          // needs 8 bytes
 		{"truncated_string", []byte{typeShortStringBase + 5, 'h', 'e'}}, // needs 5 bytes
-		{"truncated_array", []byte{typeArrayStart}},              // no end marker
+		{"truncated_array", []byte{typeArrayStart}},                     // no end marker
 	}
 
 	for _, tt := range tests {

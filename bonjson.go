@@ -19,7 +19,7 @@
 //   - Marshal, Unmarshal, Valid
 //   - NewEncoder, NewDecoder
 //   - Encoder.Encode, Decoder.Decode
-//   - Decoder.UseNumber, Decoder.DisallowUnknownFields
+//   - Decoder.DisallowUnknownFields
 //   - Decoder.Buffered, Decoder.More, Decoder.Token, Decoder.InputOffset
 //   - Number, RawMessage, Delim, Token
 //   - All error types (SyntaxError, UnmarshalTypeError, etc.)
@@ -33,6 +33,12 @@
 //   - HTMLEscape (BONJSON is binary, no HTML escaping needed)
 //   - Encoder.SetEscapeHTML (BONJSON is binary, no HTML escaping needed)
 //   - Encoder.SetIndent (BONJSON is binary, no indentation)
+//
+// Note: Decoder.UseNumber() is NOT provided. Unlike JSON where all numbers are
+// text (and float64 loses precision for large integers), BONJSON stores numbers
+// in their native binary format. When decoding to interface{}, signed integers
+// become int64, unsigned integers become uint64, and floats become float64.
+// This preserves full precision without needing UseNumber().
 //
 // # Security Considerations
 //
@@ -96,13 +102,15 @@
 //
 //   - BONJSON null -> nil
 //   - BONJSON bool -> bool
-//   - BONJSON number -> float64 (or int64/uint64 when possible)
+//   - BONJSON signed integer -> int64
+//   - BONJSON unsigned integer -> uint64
+//   - BONJSON float -> float64
 //   - BONJSON string -> string
 //   - BONJSON array -> []any
 //   - BONJSON object -> map[string]any
 //
-// When decoding into interface{}, numbers are stored as float64 by default.
-// Call Decoder.UseNumber to store numbers as Number (string) instead.
+// Unlike JSON (where all numbers are text and typically become float64),
+// BONJSON preserves numeric types in their native binary format.
 //
 // # Custom Types
 //

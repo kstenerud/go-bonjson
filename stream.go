@@ -31,10 +31,6 @@ func NewDecoder(r io.Reader) *Decoder {
 	return dec
 }
 
-// UseNumber causes the Decoder to unmarshal a number into an
-// interface value as a Number instead of as a float64.
-func (dec *Decoder) UseNumber() { dec.d.useNumber = true }
-
 // DisallowUnknownFields causes the Decoder to return an error when the destination
 // is a struct and the input contains object keys which do not match any
 // non-ignored, exported fields in the destination.
@@ -329,8 +325,9 @@ const (
 //
 //   - Delim, for the container delimiters [ ] { }
 //   - bool, for BONJSON booleans
-//   - float64, for BONJSON numbers
-//   - Number, for BONJSON numbers (when UseNumber is enabled)
+//   - int64, for BONJSON signed integers
+//   - uint64, for BONJSON unsigned integers
+//   - float64, for BONJSON floats
 //   - string, for BONJSON string literals
 //   - nil, for BONJSON null
 type Token any
@@ -356,17 +353,12 @@ func (dec *Decoder) Token() (Token, error) {
 
 	switch {
 	case tc <= typeSmallIntMax:
-		if dec.d.useNumber {
-			return Number(itoa(int64(tc))), nil
-		}
-		return float64(tc), nil
+		// BONJSON preserves integer types natively
+		return int64(tc), nil
 
 	case tc >= typeSmallNegIntMin:
 		val := int64(int8(tc))
-		if dec.d.useNumber {
-			return Number(itoa(val)), nil
-		}
-		return float64(val), nil
+		return val, nil
 
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		n := int(tc&0x07) + 1
@@ -378,10 +370,7 @@ func (dec *Decoder) Token() (Token, error) {
 		for i := 0; i < n; i++ {
 			val |= uint64(buf[i]) << (i * 8)
 		}
-		if dec.d.useNumber {
-			return Number(uitoa(val)), nil
-		}
-		return float64(val), nil
+		return val, nil
 
 	case tc >= typeSintBase && tc <= typeSintBase+7:
 		n := int(tc&0x07) + 1
@@ -401,10 +390,7 @@ func (dec *Decoder) Token() (Token, error) {
 				val = int64(uval | mask)
 			}
 		}
-		if dec.d.useNumber {
-			return Number(itoa(val)), nil
-		}
-		return float64(val), nil
+		return val, nil
 
 	case tc == typeFloat16:
 		buf := make([]byte, 2)
@@ -412,9 +398,6 @@ func (dec *Decoder) Token() (Token, error) {
 			return nil, err
 		}
 		f, _ := decodeFloat16(buf)
-		if dec.d.useNumber {
-			return Number(ftoa(f)), nil
-		}
 		return f, nil
 
 	case tc == typeFloat32:
@@ -423,9 +406,6 @@ func (dec *Decoder) Token() (Token, error) {
 			return nil, err
 		}
 		f, _ := decodeFloat32(buf)
-		if dec.d.useNumber {
-			return Number(ftoa(f)), nil
-		}
 		return f, nil
 
 	case tc == typeFloat64:
@@ -434,9 +414,6 @@ func (dec *Decoder) Token() (Token, error) {
 			return nil, err
 		}
 		f, _ := decodeFloat64(buf)
-		if dec.d.useNumber {
-			return Number(ftoa(f)), nil
-		}
 		return f, nil
 
 	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
