@@ -120,6 +120,20 @@ func (d *decodeState) popSeenStructFields() {
 	d.seenStructFieldsDepth--
 }
 
+// enterContainer increments depth and returns an error if max depth exceeded.
+func (d *decodeState) enterContainer() error {
+	d.containerDepth++
+	if d.containerDepth > d.maxAllowedContainerDepth {
+		return &MaxDepthError{Depth: d.maxAllowedContainerDepth, Offset: int64(d.offsetIntoData)}
+	}
+	return nil
+}
+
+// exitContainer decrements the container depth.
+func (d *decodeState) exitContainer() {
+	d.containerDepth--
+}
+
 func (d *decodeState) init(data []byte) {
 	d.data = data
 	d.offsetIntoData = 0
@@ -338,7 +352,7 @@ func dereferenceAndGetUnmarshaler(v reflect.Value, decodingNull bool) (Unmarshal
 	haveAddr := false
 	v0 := v
 	v0Type := v0.Type()
-	v0Kind := v0Type.Kind()
+	v0Kind := v0.Kind()
 
 	// Cache type and kind to avoid repeated reflect calls
 	vType := v0Type
@@ -802,15 +816,16 @@ func (d *decodeState) storeNull(v reflect.Value, _ reflect.Value) error {
 }
 
 func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
-	// Check depth
-	d.containerDepth++
-	if d.containerDepth > d.maxAllowedContainerDepth {
-		return &MaxDepthError{Depth: d.maxAllowedContainerDepth, Offset: int64(d.offsetIntoData)}
+	if err := d.enterContainer(); err != nil {
+		return err
 	}
-	defer func() { d.containerDepth-- }()
+	defer d.exitContainer()
+
+	vType := v.Type()
+	vKind := v.Kind()
 
 	// Handle interface{}
-	if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
+	if vKind == reflect.Interface && v.NumMethod() == 0 {
 		ai := d.arrayInterface()
 		if d.savedError != nil {
 			return d.savedError
@@ -820,14 +835,13 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 	}
 
 	// Check type
-	switch v.Kind() {
-	case reflect.Array, reflect.Slice:
-		// ok
-	default:
-		d.saveError(&UnmarshalTypeError{Value: "array", Type: v.Type(), Offset: int64(d.offsetIntoData)})
+	isSlice := vKind == reflect.Slice
+	if !isSlice && vKind != reflect.Array {
+		d.saveError(&UnmarshalTypeError{Value: "array", Type: vType, Offset: int64(d.offsetIntoData)})
 		return d.skipContainer()
 	}
 
+	vLen := v.Len()
 	i := 0
 	for {
 		tc, err := d.peekByte()
@@ -841,16 +855,17 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 		}
 
 		// Expand slice if necessary
-		if v.Kind() == reflect.Slice {
+		if isSlice {
 			if i >= v.Cap() {
 				v.Grow(1)
 			}
-			if i >= v.Len() {
-				v.SetLen(i + 1)
+			if i >= vLen {
+				vLen++
+				v.SetLen(vLen)
 			}
 		}
 
-		if i < v.Len() {
+		if i < vLen {
 			if err := d.decodeValue(v.Index(i)); err != nil {
 				return err
 			}
@@ -863,17 +878,17 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 		i++
 	}
 
-	if i < v.Len() {
-		if v.Kind() == reflect.Array {
-			for ; i < v.Len(); i++ {
+	if i < vLen {
+		if isSlice {
+			v.SetLen(i)
+		} else {
+			for ; i < vLen; i++ {
 				v.Index(i).SetZero()
 			}
-		} else {
-			v.SetLen(i)
 		}
 	}
-	if i == 0 && v.Kind() == reflect.Slice {
-		v.Set(reflect.MakeSlice(v.Type(), 0, 0))
+	if i == 0 && isSlice {
+		v.Set(reflect.MakeSlice(vType, 0, 0))
 	}
 	return nil
 }
@@ -885,12 +900,10 @@ var (
 )
 
 func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
-	// Check depth
-	d.containerDepth++
-	if d.containerDepth > d.maxAllowedContainerDepth {
-		return &MaxDepthError{Depth: d.maxAllowedContainerDepth, Offset: int64(d.offsetIntoData)}
+	if err := d.enterContainer(); err != nil {
+		return err
 	}
-	defer func() { d.containerDepth-- }()
+	defer d.exitContainer()
 
 	// Handle interface{}
 	if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
