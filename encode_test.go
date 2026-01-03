@@ -63,8 +63,8 @@ func TestMarshalBasicTypes(t *testing.T) {
 		// Strings
 		{"string_empty", ""},
 		{"string_short", "hello"},
-		{"string_15", "123456789012345"},   // max short string
-		{"string_16", "1234567890123456"},  // first long string
+		{"string_15", "123456789012345"},  // max short string
+		{"string_16", "1234567890123456"}, // first long string
 		{"string_unicode", "Hello, 世界!"},
 		{"string_emoji", "😀🎉🚀"},
 
@@ -666,13 +666,13 @@ func TestMarshalBigFloat(t *testing.T) {
 // ============================================================================
 
 type OmitemptyStruct struct {
-	Name    string  `bonjson:"name"`
-	Age     int     `bonjson:"age,omitempty"`
-	Score   float64 `bonjson:"score,omitempty"`
-	Active  bool    `bonjson:"active,omitempty"`
-	Tags    []string `bonjson:"tags,omitempty"`
-	Meta    map[string]string `bonjson:"meta,omitempty"`
-	Ptr     *int    `bonjson:"ptr,omitempty"`
+	Name   string            `bonjson:"name"`
+	Age    int               `bonjson:"age,omitempty"`
+	Score  float64           `bonjson:"score,omitempty"`
+	Active bool              `bonjson:"active,omitempty"`
+	Tags   []string          `bonjson:"tags,omitempty"`
+	Meta   map[string]string `bonjson:"meta,omitempty"`
+	Ptr    *int              `bonjson:"ptr,omitempty"`
 }
 
 func TestOmitempty(t *testing.T) {
@@ -689,37 +689,6 @@ func TestOmitempty(t *testing.T) {
 
 	if got.Name != v.Name {
 		t.Errorf("omitempty: name = %q, want %q", got.Name, v.Name)
-	}
-}
-
-// ============================================================================
-// Number Type Tests
-// ============================================================================
-
-func TestNumberType(t *testing.T) {
-	// Test that Number.String() works
-	n := Number("123.456")
-	if n.String() != "123.456" {
-		t.Errorf("Number.String() = %q, want %q", n.String(), "123.456")
-	}
-
-	// Test Number.Float64()
-	f, err := n.Float64()
-	if err != nil {
-		t.Fatalf("Number.Float64() error: %v", err)
-	}
-	if f != 123.456 {
-		t.Errorf("Number.Float64() = %f, want %f", f, 123.456)
-	}
-
-	// Test Number.Int64()
-	n = Number("42")
-	i, err := n.Int64()
-	if err != nil {
-		t.Fatalf("Number.Int64() error: %v", err)
-	}
-	if i != 42 {
-		t.Errorf("Number.Int64() = %d, want %d", i, 42)
 	}
 }
 

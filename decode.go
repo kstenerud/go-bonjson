@@ -57,22 +57,6 @@ type Unmarshaler interface {
 	UnmarshalBONJSON([]byte) error
 }
 
-// A Number represents a BONJSON number literal.
-type Number string
-
-// String returns the literal text of the number.
-func (n Number) String() string { return string(n) }
-
-// Float64 returns the number as a float64.
-func (n Number) Float64() (float64, error) {
-	return strconv.ParseFloat(string(n), 64)
-}
-
-// Int64 returns the number as an int64.
-func (n Number) Int64() (int64, error) {
-	return strconv.ParseInt(string(n), 10, 64)
-}
-
 // decodeState represents the state while decoding a BONJSON value.
 type decodeState struct {
 	data   []byte
@@ -461,12 +445,6 @@ func (d *decodeState) storeInt(val int64, v reflect.Value, ut encoding.TextUnmar
 		v.SetUint(uint64(val))
 	case reflect.Float32, reflect.Float64:
 		v.SetFloat(float64(val))
-	case reflect.String:
-		if v.Type() == numberType {
-			v.SetString(strconv.FormatInt(val, 10))
-			return nil
-		}
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
 	default:
 		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
 	}
@@ -504,12 +482,6 @@ func (d *decodeState) storeUint(val uint64, v reflect.Value, ut encoding.TextUnm
 		v.SetUint(val)
 	case reflect.Float32, reflect.Float64:
 		v.SetFloat(float64(val))
-	case reflect.String:
-		if v.Type() == numberType {
-			v.SetString(strconv.FormatUint(val, 10))
-			return nil
-		}
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
 	default:
 		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
 	}
@@ -552,12 +524,6 @@ func (d *decodeState) storeFloat(val float64, v reflect.Value, ut encoding.TextU
 			return nil
 		}
 		v.SetUint(u)
-	case reflect.String:
-		if v.Type() == numberType {
-			v.SetString(strconv.FormatFloat(val, 'g', -1, 64))
-			return nil
-		}
-		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
 	default:
 		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.off)})
 	}

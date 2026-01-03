@@ -21,7 +21,7 @@
 //   - Encoder.Encode, Decoder.Decode
 //   - Decoder.DisallowUnknownFields
 //   - Decoder.Buffered, Decoder.More, Decoder.Token, Decoder.InputOffset
-//   - Number, RawMessage, Delim, Token
+//   - RawMessage, Delim, Token
 //   - All error types (SyntaxError, UnmarshalTypeError, etc.)
 //
 // The following encoding/json functions are NOT provided because they are

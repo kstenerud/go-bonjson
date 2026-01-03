@@ -46,13 +46,13 @@ The following APIs work identically:
 - `Encoder.Encode`, `Decoder.Decode`
 - `Decoder.DisallowUnknownFields`
 - `Decoder.Buffered`, `Decoder.More`, `Decoder.Token`, `Decoder.InputOffset`
-- `Number`, `RawMessage`, `Delim`, `Token`
+- `RawMessage`, `Delim`, `Token`
 - All error types
 
-**Note:** The following JSON-specific functions are not provided since they relate to text formatting, which doesn't apply to a binary format:
+**Note:** The following JSON-specific functions are not provided since they relate to text formatting or JSON's text-based number representation:
 - `MarshalIndent`, `Compact`, `Indent`, `HTMLEscape`
 - `Encoder.SetEscapeHTML`, `Encoder.SetIndent`
-- `Decoder.UseNumber` (see Type Mapping below)
+- `Decoder.UseNumber`, `Number` type (see Type Mapping below)
 
 ## Installation
 

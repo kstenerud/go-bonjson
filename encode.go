@@ -32,7 +32,7 @@ import (
 //
 // Boolean values encode as BONJSON booleans.
 //
-// Floating point, integer, and Number values encode as BONJSON numbers.
+// Floating point and integer values encode as BONJSON numbers.
 // NaN and +/-Inf values will return an UnsupportedValueError.
 //
 // String values encode as BONJSON strings. Invalid UTF-8 sequences will
@@ -627,45 +627,7 @@ func float64Encoder(e *encodeState, v reflect.Value, opts encOpts) {
 	e.Write(e.scratch[:n])
 }
 
-var numberType = reflect.TypeFor[Number]()
-
 func stringEncoder(e *encodeState, v reflect.Value, opts encOpts) {
-	if v.Type() == numberType {
-		numStr := v.String()
-		if numStr == "" {
-			numStr = "0"
-		}
-		if !isValidNumber(numStr) {
-			e.error(fmt.Errorf("bonjson: invalid number literal %q", numStr))
-		}
-		// Parse and encode as a proper number
-		if strings.ContainsAny(numStr, ".eE") {
-			f, err := strconv.ParseFloat(numStr, 64)
-			if err != nil {
-				e.error(err)
-			}
-			n, err := encodeNumber(e.scratch[:], f)
-			if err != nil {
-				e.error(err)
-			}
-			e.Write(e.scratch[:n])
-		} else if numStr[0] == '-' {
-			i, err := strconv.ParseInt(numStr, 10, 64)
-			if err != nil {
-				e.error(err)
-			}
-			n := encodeSignedInt(e.scratch[:], i)
-			e.Write(e.scratch[:n])
-		} else {
-			u, err := strconv.ParseUint(numStr, 10, 64)
-			if err != nil {
-				e.error(err)
-			}
-			n := encodeUnsignedInt(e.scratch[:], u)
-			e.Write(e.scratch[:n])
-		}
-		return
-	}
 	s := v.String()
 	// Validate UTF-8 - BONJSON doesn't allow invalid UTF-8
 	if !utf8.ValidString(s) {
