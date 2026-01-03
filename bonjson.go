@@ -140,7 +140,7 @@ func Valid(data []byte) bool {
 	d.init(data)
 	var v any
 	rv := reflect.ValueOf(&v).Elem()
-	err := d.value(rv)
+	err := d.decodeValue(rv)
 	if err != nil {
 		return false
 	}

@@ -69,8 +69,8 @@ type decodeState struct {
 
 	// Stack of boolean slices for duplicate key detection in nested structs.
 	// Using field indices is more efficient than map lookups for structs.
-	seenFieldsStack [][]bool
-	seenFieldsDepth int
+	seenStructFieldsStack [][]bool
+	seenStructFieldsDepth int
 
 	savedError error
 }
@@ -90,33 +90,33 @@ func newDecodeState() *decodeState {
 	d.maxAllowedStringLength = defaultMaxStringLength
 	d.maxAllowedContainerDepth = defaultMaxContainerDepth
 	d.containerDepth = 0
-	d.seenFieldsDepth = 0
+	d.seenStructFieldsDepth = 0
 	return d
 }
 
-// pushSeenFields returns a cleared boolean slice for duplicate field detection in structs.
+// pushSeenStructFields returns a cleared boolean slice for duplicate field detection in structs.
 // The slice is reused across calls to avoid allocations.
-func (d *decodeState) pushSeenFields(fieldCount int) []bool {
-	if d.seenFieldsDepth >= len(d.seenFieldsStack) {
+func (d *decodeState) pushSeenStructFields(fieldCount int) []bool {
+	if d.seenStructFieldsDepth >= len(d.seenStructFieldsStack) {
 		// Need to grow the stack
-		d.seenFieldsStack = append(d.seenFieldsStack, make([]bool, fieldCount))
+		d.seenStructFieldsStack = append(d.seenStructFieldsStack, make([]bool, fieldCount))
 	} else {
 		// Reuse existing slice if large enough, otherwise allocate new one
-		if cap(d.seenFieldsStack[d.seenFieldsDepth]) >= fieldCount {
-			d.seenFieldsStack[d.seenFieldsDepth] = d.seenFieldsStack[d.seenFieldsDepth][:fieldCount]
-			clear(d.seenFieldsStack[d.seenFieldsDepth])
+		if cap(d.seenStructFieldsStack[d.seenStructFieldsDepth]) >= fieldCount {
+			d.seenStructFieldsStack[d.seenStructFieldsDepth] = d.seenStructFieldsStack[d.seenStructFieldsDepth][:fieldCount]
+			clear(d.seenStructFieldsStack[d.seenStructFieldsDepth])
 		} else {
-			d.seenFieldsStack[d.seenFieldsDepth] = make([]bool, fieldCount)
+			d.seenStructFieldsStack[d.seenStructFieldsDepth] = make([]bool, fieldCount)
 		}
 	}
-	s := d.seenFieldsStack[d.seenFieldsDepth]
-	d.seenFieldsDepth++
+	s := d.seenStructFieldsStack[d.seenStructFieldsDepth]
+	d.seenStructFieldsDepth++
 	return s
 }
 
-// popSeenFields releases the current seenFields slice back to the stack.
-func (d *decodeState) popSeenFields() {
-	d.seenFieldsDepth--
+// popSeenStructFields releases the current seenStructFields slice back to the stack.
+func (d *decodeState) popSeenStructFields() {
+	d.seenStructFieldsDepth--
 }
 
 func (d *decodeState) init(data []byte) {
@@ -137,12 +137,11 @@ func (d *decodeState) unmarshal(v any) error {
 		return &InvalidUnmarshalError{reflect.TypeOf(v)}
 	}
 
-	err := d.value(rv)
+	err := d.decodeValue(rv)
 	if err != nil {
 		return err
 	}
 
-	// Check for trailing data
 	if d.offsetIntoData < len(d.data) {
 		return &SyntaxError{msg: "trailing data after value", Offset: int64(d.offsetIntoData)}
 	}
@@ -168,18 +167,13 @@ func (d *decodeState) peekByte() (byte, error) {
 	return d.data[d.offsetIntoData], nil
 }
 
-// value decodes a BONJSON value into v
-func (d *decodeState) value(v reflect.Value) error {
+// decodeValue decodes a BONJSON decodeValue into v
+func (d *decodeState) decodeValue(v reflect.Value) error {
 	tc, err := d.readByte()
 	if err != nil {
 		return err
 	}
-	return d.decodeValue(tc, v)
-}
 
-// decodeValue decodes a value given its type code
-func (d *decodeState) decodeValue(tc byte, v reflect.Value) error {
-	// If v is not valid, just skip the value
 	if !v.IsValid() {
 		return d.skipValue(tc)
 	}
@@ -813,12 +807,12 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 		}
 
 		if i < v.Len() {
-			if err := d.value(v.Index(i)); err != nil {
+			if err := d.decodeValue(v.Index(i)); err != nil {
 				return err
 			}
 		} else {
 			// Ran out of fixed array: skip
-			if err := d.value(reflect.Value{}); err != nil {
+			if err := d.decodeValue(reflect.Value{}); err != nil {
 				return err
 			}
 		}
@@ -916,7 +910,7 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 		mapElem.SetZero()
 
 		// Read value
-		if err := d.value(mapElem); err != nil {
+		if err := d.decodeValue(mapElem); err != nil {
 			return err
 		}
 
@@ -972,8 +966,8 @@ func (d *decodeState) convertMapKey(kt reflect.Type, key []byte, keyStart int) (
 
 func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 	fields := cachedTypeFields(v.Type())
-	seenFields := d.pushSeenFields(fields.fieldCount)
-	defer d.popSeenFields()
+	seenFields := d.pushSeenStructFields(fields.fieldCount)
+	defer d.popSeenStructFields()
 
 	for {
 		tc, err := d.peekByte()
@@ -997,7 +991,7 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 		subv := d.findStructField(v, &fields, key, keyStart, seenFields)
 
 		// Read value
-		if err := d.value(subv); err != nil {
+		if err := d.decodeValue(subv); err != nil {
 			return err
 		}
 	}
@@ -1186,7 +1180,7 @@ func (d *decodeState) arrayInterface() []any {
 
 		var elem any
 		ev := reflect.ValueOf(&elem).Elem()
-		if err := d.value(ev); err != nil {
+		if err := d.decodeValue(ev); err != nil {
 			d.saveError(err)
 			return v
 		}
@@ -1226,7 +1220,7 @@ func (d *decodeState) objectInterface() map[string]any {
 
 		var val any
 		ev := reflect.ValueOf(&val).Elem()
-		if err := d.value(ev); err != nil {
+		if err := d.decodeValue(ev); err != nil {
 			d.saveError(err)
 			return m
 		}
