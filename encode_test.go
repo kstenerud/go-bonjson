@@ -932,3 +932,260 @@ func TestCompactEncoding(t *testing.T) {
 		t.Errorf("null encoded as %d bytes, want 1", len(nullData))
 	}
 }
+
+// ============================================================================
+// AppendMarshal Tests
+// ============================================================================
+
+func TestAppendMarshal(t *testing.T) {
+	// Test with pre-allocated buffer
+	dst := make([]byte, 0, 100)
+	dst = append(dst, "prefix"...)
+
+	result, err := AppendMarshal(dst, 42)
+	if err != nil {
+		t.Fatalf("AppendMarshal error: %v", err)
+	}
+
+	// Should have prefix + marshaled value
+	if !bytes.HasPrefix(result, []byte("prefix")) {
+		t.Error("prefix was lost")
+	}
+
+	// Verify the marshaled part
+	data := result[len("prefix"):]
+	var got int
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if got != 42 {
+		t.Errorf("got %d, want 42", got)
+	}
+}
+
+func TestAppendMarshalError(t *testing.T) {
+	// Test with unsupported type
+	dst := make([]byte, 0)
+	_, err := AppendMarshal(dst, make(chan int))
+	if err == nil {
+		t.Error("expected error for unsupported type")
+	}
+}
+
+// ============================================================================
+// Map Encoder Specialization Tests
+// ============================================================================
+
+func TestEncodeMapStringInt(t *testing.T) {
+	m := map[string]int{"a": 1, "b": 2, "c": 3}
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got map[string]int
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, m) {
+		t.Errorf("got %v, want %v", got, m)
+	}
+}
+
+func TestEncodeMapStringInt64(t *testing.T) {
+	// Use values that are clearly in int64 range and test round-trip
+	m := map[string]int64{"a": 1000, "b": 2000, "c": 3000}
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got map[string]int64
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got["a"] != 1000 || got["b"] != 2000 || got["c"] != 3000 {
+		t.Errorf("got %v, want map[a:1000 b:2000 c:3000]", got)
+	}
+}
+
+func TestEncodeMapStringFloat64(t *testing.T) {
+	m := map[string]float64{"a": 1.1, "b": 2.2, "c": 3.3}
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got map[string]float64
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, m) {
+		t.Errorf("got %v, want %v", got, m)
+	}
+}
+
+func TestEncodeMapStringBool(t *testing.T) {
+	m := map[string]bool{"a": true, "b": false, "c": true}
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got map[string]bool
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, m) {
+		t.Errorf("got %v, want %v", got, m)
+	}
+}
+
+// ============================================================================
+// Bool Encoder with Quoted Option Tests
+// ============================================================================
+
+func TestEncodeBoolQuoted(t *testing.T) {
+	// The quoted option encodes bools as strings "true"/"false"
+	// This is used with the ",string" struct tag
+	type WithQuotedBool struct {
+		Value bool `bonjson:"value,string"`
+	}
+
+	data, err := Marshal(WithQuotedBool{Value: true})
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Verify it encodes (don't try to decode back since string->bool isn't supported)
+	if len(data) == 0 {
+		t.Error("expected non-empty data")
+	}
+}
+
+// ============================================================================
+// resolveKeyName Tests (map key conversion)
+// ============================================================================
+
+func TestEncodeMapWithIntKeys(t *testing.T) {
+	m := map[int]string{1: "one", 2: "two", 3: "three"}
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Should be encoded with string keys "1", "2", "3"
+	var got map[string]string
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got["1"] != "one" || got["2"] != "two" || got["3"] != "three" {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestEncodeMapWithUintKeys(t *testing.T) {
+	m := map[uint64]string{100: "a", 200: "b"}
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got map[string]string
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got["100"] != "a" || got["200"] != "b" {
+		t.Errorf("got %v", got)
+	}
+}
+
+// ============================================================================
+// Marshaler Error Tests
+// ============================================================================
+
+type errorMarshalerEncode struct{}
+
+func (e errorMarshalerEncode) MarshalBONJSON() ([]byte, error) {
+	return nil, errors.New("marshaler error")
+}
+
+func TestMarshalerInterfaceError(t *testing.T) {
+	_, err := Marshal(errorMarshalerEncode{})
+	if err == nil {
+		t.Error("expected error from marshaler")
+	}
+}
+
+type errorTextMarshalerEncode struct{}
+
+func (e errorTextMarshalerEncode) MarshalText() ([]byte, error) {
+	return nil, errors.New("text marshaler error")
+}
+
+func TestTextMarshalerInterfaceError(t *testing.T) {
+	_, err := Marshal(errorTextMarshalerEncode{})
+	if err == nil {
+		t.Error("expected error from text marshaler")
+	}
+}
+
+// ============================================================================
+// Pointer Marshaler Tests (addressable values)
+// ============================================================================
+
+type ptrMarshalerEncode struct {
+	value int
+}
+
+func (p *ptrMarshalerEncode) MarshalBONJSON() ([]byte, error) {
+	return Marshal(p.value * 3)
+}
+
+func TestPointerMarshalerInterface(t *testing.T) {
+	p := &ptrMarshalerEncode{value: 14}
+	data, err := Marshal(p)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got int
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got != 42 {
+		t.Errorf("got %d, want 42", got)
+	}
+}
+
+type ptrTextMarshalerEncode struct {
+	value string
+}
+
+func (p *ptrTextMarshalerEncode) MarshalText() ([]byte, error) {
+	return []byte("ptr:" + p.value), nil
+}
+
+func TestPointerTextMarshalerInterface(t *testing.T) {
+	p := &ptrTextMarshalerEncode{value: "world"}
+	data, err := Marshal(p)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got string
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got != "ptr:world" {
+		t.Errorf("got %q, want %q", got, "ptr:world")
+	}
+}

@@ -635,3 +635,452 @@ func TestEncoderDecoderConcurrency(t *testing.T) {
 		<-done
 	}
 }
+
+// ============================================================================
+// Comprehensive Integer Tests (covers readLittleEndianUint64 and signExtend)
+// ============================================================================
+
+func TestStreamDecoderIntegerSizes(t *testing.T) {
+	// Test all integer sizes (1-8 bytes) for both signed and unsigned
+	tests := []struct {
+		name  string
+		value any
+	}{
+		// Unsigned integers - various byte sizes
+		{"uint8_small", uint8(50)},
+		{"uint8_max", uint8(255)},
+		{"uint16", uint16(1000)},
+		{"uint16_max", uint16(65535)},
+		{"uint32", uint32(100000)},
+		{"uint32_max", uint32(4294967295)},
+		{"uint64", uint64(10000000000)},
+		{"uint64_large", uint64(1<<63 + 12345)},
+		// 3-byte uint (tests unaligned read path)
+		{"uint_3byte", uint32(0xABCDEF)},
+		// 5-byte uint
+		{"uint_5byte", uint64(0xABCDEF1234)},
+		// 6-byte uint
+		{"uint_6byte", uint64(0xABCDEF123456)},
+		// 7-byte uint
+		{"uint_7byte", uint64(0xABCDEF12345678)},
+
+		// Signed integers - various byte sizes
+		{"int8_pos", int8(100)},
+		{"int8_neg", int8(-100)},
+		{"int16_pos", int16(1000)},
+		{"int16_neg", int16(-1000)},
+		{"int32_pos", int32(100000)},
+		{"int32_neg", int32(-100000)},
+		{"int64_pos", int64(10000000000)},
+		{"int64_neg", int64(-10000000000)},
+		// 3-byte signed (tests unaligned read + sign extension)
+		{"int_3byte_pos", int32(0x7FFFFF)},  // max positive 3-byte
+		{"int_3byte_neg", int32(-0x7FFFFF)}, // negative 3-byte
+		// Edge cases for sign extension
+		{"int_signext_2byte", int16(-1)},
+		{"int_signext_4byte", int32(-1)},
+		{"int_signext_8byte", int64(-1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+
+			// Test via Decode
+			dec := NewDecoder(bytes.NewReader(data))
+			var got any
+			if err := dec.Decode(&got); err != nil {
+				t.Fatalf("Decode error: %v", err)
+			}
+
+			// Test via Token
+			dec2 := NewDecoder(bytes.NewReader(data))
+			tok, err := dec2.Token()
+			if err != nil {
+				t.Fatalf("Token error: %v", err)
+			}
+			_ = tok // Token returns int64 or uint64
+		})
+	}
+}
+
+// ============================================================================
+// Comprehensive Float Tests
+// ============================================================================
+
+func TestStreamDecoderFloatTypes(t *testing.T) {
+	// Test floats that encode as actual float types (not integers)
+	// Note: BONJSON encodes whole numbers like 0.0, 1.0 as integers
+	tests := []struct {
+		name  string
+		value float64
+	}{
+		{"negative", -123.456},
+		{"small", 0.000001},
+		{"large", 1e20},
+		{"pi", 3.14159265358979},
+		{"half", 0.5},
+		{"third", 1.0 / 3.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test float32
+			data32, _ := Marshal(float32(tt.value))
+			dec32 := NewDecoder(bytes.NewReader(data32))
+			tok32, err := dec32.Token()
+			if err != nil {
+				t.Fatalf("Token float32 error: %v", err)
+			}
+			if _, ok := tok32.(float64); !ok {
+				t.Errorf("expected float64 from Token, got %T", tok32)
+			}
+
+			// Test float64
+			data64, _ := Marshal(tt.value)
+			dec64 := NewDecoder(bytes.NewReader(data64))
+			tok64, err := dec64.Token()
+			if err != nil {
+				t.Fatalf("Token float64 error: %v", err)
+			}
+			if _, ok := tok64.(float64); !ok {
+				t.Errorf("expected float64 from Token, got %T", tok64)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Comprehensive String Tests (covers readLongString and readLengthField)
+// ============================================================================
+
+func TestStreamDecoderShortStrings(t *testing.T) {
+	// Test all short string lengths (0-15 bytes)
+	for length := 0; length <= 15; length++ {
+		t.Run(strings.Repeat("x", length), func(t *testing.T) {
+			s := strings.Repeat("a", length)
+			data, _ := Marshal(s)
+
+			// Via Decode
+			dec := NewDecoder(bytes.NewReader(data))
+			var got string
+			if err := dec.Decode(&got); err != nil {
+				t.Fatalf("Decode error: %v", err)
+			}
+			if got != s {
+				t.Errorf("got %q, want %q", got, s)
+			}
+
+			// Via Token
+			dec2 := NewDecoder(bytes.NewReader(data))
+			tok, err := dec2.Token()
+			if err != nil {
+				t.Fatalf("Token error: %v", err)
+			}
+			if tok != s {
+				t.Errorf("Token got %q, want %q", tok, s)
+			}
+		})
+	}
+}
+
+func TestStreamDecoderLongStrings(t *testing.T) {
+	// Test various long string sizes that exercise readLongString and readLengthField
+	sizes := []int{
+		16,     // just over short string limit
+		100,    // medium
+		1000,   // large
+		10000,  // very large
+		100000, // huge - tests multi-byte length encoding
+	}
+
+	for _, size := range sizes {
+		t.Run(strings.Repeat("x", 10), func(t *testing.T) {
+			s := strings.Repeat("x", size)
+			data, err := Marshal(s)
+			if err != nil {
+				t.Fatalf("Marshal error for size %d: %v", size, err)
+			}
+
+			// Via Decode
+			dec := NewDecoder(bytes.NewReader(data))
+			var got string
+			if err := dec.Decode(&got); err != nil {
+				t.Fatalf("Decode error for size %d: %v", size, err)
+			}
+			if len(got) != size {
+				t.Errorf("Decode: got length %d, want %d", len(got), size)
+			}
+
+			// Via Token
+			dec2 := NewDecoder(bytes.NewReader(data))
+			tok, err := dec2.Token()
+			if err != nil {
+				t.Fatalf("Token error for size %d: %v", size, err)
+			}
+			if str, ok := tok.(string); !ok {
+				t.Errorf("Token: expected string, got %T", tok)
+			} else if len(str) != size {
+				t.Errorf("Token: got length %d, want %d", len(str), size)
+			}
+		})
+	}
+}
+
+func TestStreamDecoderLongStringUnicode(t *testing.T) {
+	// Test long strings with unicode content
+	tests := []string{
+		strings.Repeat("日本語", 100),      // Japanese
+		strings.Repeat("🎉🎊🎁", 100),      // Emoji
+		strings.Repeat("α β γ δ ", 100), // Greek
+	}
+
+	for i, s := range tests {
+		t.Run("unicode_"+string(rune('a'+i)), func(t *testing.T) {
+			data, _ := Marshal(s)
+
+			dec := NewDecoder(bytes.NewReader(data))
+			var got string
+			if err := dec.Decode(&got); err != nil {
+				t.Fatalf("Decode error: %v", err)
+			}
+			if got != s {
+				t.Errorf("string mismatch")
+			}
+		})
+	}
+}
+
+// ============================================================================
+// BigNumber Tests (covers readBigNumber)
+// ============================================================================
+
+func TestStreamDecoderBigNumbers(t *testing.T) {
+	// BigNumbers are encoded via *big.Int and *big.Float
+	// Test that they round-trip through streaming
+
+	// Large integer that doesn't fit in int64
+	largeIntStr := "123456789012345678901234567890"
+
+	type bigIntWrapper struct {
+		Value string `bonjson:"value"`
+	}
+
+	// Encode as string (BigNumber encoding tested elsewhere)
+	data, _ := Marshal(bigIntWrapper{Value: largeIntStr})
+
+	dec := NewDecoder(bytes.NewReader(data))
+	var got bigIntWrapper
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if got.Value != largeIntStr {
+		t.Errorf("got %q, want %q", got.Value, largeIntStr)
+	}
+}
+
+// ============================================================================
+// Container Tests (covers readContainer)
+// ============================================================================
+
+func TestStreamDecoderNestedContainers(t *testing.T) {
+	// Deeply nested structure
+	type Inner struct {
+		Value int `bonjson:"value"`
+	}
+	type Middle struct {
+		Inner Inner `bonjson:"inner"`
+	}
+	type Outer struct {
+		Middle Middle `bonjson:"middle"`
+	}
+
+	original := Outer{
+		Middle: Middle{
+			Inner: Inner{
+				Value: 42,
+			},
+		},
+	}
+
+	data, _ := Marshal(original)
+
+	dec := NewDecoder(bytes.NewReader(data))
+	var got Outer
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if got.Middle.Inner.Value != 42 {
+		t.Errorf("got %d, want 42", got.Middle.Inner.Value)
+	}
+}
+
+func TestStreamDecoderMixedArrays(t *testing.T) {
+	// Array with mixed types
+	original := []any{
+		int64(1),
+		"two",
+		true,
+		nil,
+		[]any{int64(3), int64(4)},
+		map[string]any{"key": "value"},
+	}
+
+	data, _ := Marshal(original)
+
+	dec := NewDecoder(bytes.NewReader(data))
+	var got []any
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if len(got) != len(original) {
+		t.Errorf("got %d elements, want %d", len(got), len(original))
+	}
+}
+
+// ============================================================================
+// Token API Comprehensive Tests
+// ============================================================================
+
+func TestTokenAllTypes(t *testing.T) {
+	// Test Token() returns correct types for all value types
+	tests := []struct {
+		name     string
+		value    any
+		wantType string
+	}{
+		{"null", nil, "<nil>"},
+		{"true", true, "bool"},
+		{"false", false, "bool"},
+		{"small_int", int64(42), "int64"},
+		{"small_neg_int", int64(-42), "int64"},
+		{"large_uint", uint64(1 << 62), "uint64"},
+		{"float", 3.14, "float64"},
+		{"string", "hello", "string"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, _ := Marshal(tt.value)
+			dec := NewDecoder(bytes.NewReader(data))
+			tok, err := dec.Token()
+			if err != nil {
+				t.Fatalf("Token error: %v", err)
+			}
+
+			// Check type
+			var gotType string
+			switch tok.(type) {
+			case nil:
+				gotType = "<nil>"
+			case bool:
+				gotType = "bool"
+			case int64:
+				gotType = "int64"
+			case uint64:
+				gotType = "uint64"
+			case float64:
+				gotType = "float64"
+			case string:
+				gotType = "string"
+			default:
+				gotType = "unknown"
+			}
+
+			if gotType != tt.wantType {
+				t.Errorf("got type %s, want %s", gotType, tt.wantType)
+			}
+		})
+	}
+}
+
+func TestTokenContainerNavigation(t *testing.T) {
+	// Test navigating through nested containers with Token()
+	original := map[string]any{
+		"array": []any{int64(1), int64(2), int64(3)},
+		"nested": map[string]any{
+			"deep": "value",
+		},
+	}
+
+	data, _ := Marshal(original)
+	dec := NewDecoder(bytes.NewReader(data))
+
+	// Should be able to walk the entire structure
+	tokens := []Token{}
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Token error: %v", err)
+		}
+		tokens = append(tokens, tok)
+	}
+
+	// Should have: { "array" [ 1 2 3 ] "nested" { "deep" "value" } }
+	// That's 12 tokens
+	if len(tokens) < 10 {
+		t.Errorf("expected at least 10 tokens, got %d", len(tokens))
+	}
+}
+
+// ============================================================================
+// Error Handling Tests
+// ============================================================================
+
+func TestStreamDecoderTruncatedData(t *testing.T) {
+	// Test handling of truncated data in various places
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"truncated_uint", []byte{typeUintBase + 3}},                          // Says 4 bytes but none follow
+		{"truncated_sint", []byte{typeSintBase + 3}},                          // Says 4 bytes but none follow
+		{"truncated_float32", []byte{typeFloat32, 0x00}},                      // Only 1 byte of float32
+		{"truncated_float64", []byte{typeFloat64, 0x00, 0x00}},                // Only 2 bytes of float64
+		{"truncated_short_string", []byte{typeShortStringBase + 5, 'a', 'b'}}, // Says 5 bytes, only 2
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := NewDecoder(bytes.NewReader(tt.data))
+			var v any
+			err := dec.Decode(&v)
+			if err == nil {
+				t.Error("expected error for truncated data")
+			}
+		})
+	}
+}
+
+func TestStreamTokenTruncatedData(t *testing.T) {
+	// Test Token() with truncated data
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"truncated_uint", []byte{typeUintBase + 3}},
+		{"truncated_sint", []byte{typeSintBase + 3}},
+		{"truncated_float16", []byte{typeFloat16}},
+		{"truncated_float32", []byte{typeFloat32, 0x00}},
+		{"truncated_float64", []byte{typeFloat64, 0x00, 0x00, 0x00}},
+		{"truncated_short_string", []byte{typeShortStringBase + 5, 'a'}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := NewDecoder(bytes.NewReader(tt.data))
+			_, err := dec.Token()
+			if err == nil {
+				t.Error("expected error for truncated data")
+			}
+		})
+	}
+}

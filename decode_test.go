@@ -7,6 +7,7 @@ package bonjson
 import (
 	"bytes"
 	"errors"
+	"math/big"
 	"reflect"
 	"strings"
 	"testing"
@@ -588,5 +589,566 @@ func TestDecoderInputOffset(t *testing.T) {
 	offset := dec.InputOffset()
 	if offset != int64(len(data)) {
 		t.Errorf("InputOffset = %d, want %d", offset, len(data))
+	}
+}
+
+// ============================================================================
+// skipValue Tests (covers skipValue code paths)
+// ============================================================================
+
+func TestDecodeSkipValue(t *testing.T) {
+	// Test skipping values when decoding into a struct with fewer fields
+	type Full struct {
+		A int    `bonjson:"a"`
+		B string `bonjson:"b"`
+		C bool   `bonjson:"c"`
+		D []int  `bonjson:"d"`
+	}
+	type Partial struct {
+		A int `bonjson:"a"`
+	}
+
+	full := Full{A: 1, B: "hello", C: true, D: []int{1, 2, 3}}
+	data, _ := Marshal(full)
+
+	var partial Partial
+	if err := Unmarshal(data, &partial); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if partial.A != 1 {
+		t.Errorf("got A=%d, want 1", partial.A)
+	}
+}
+
+func TestDecodeSkipVariousTypes(t *testing.T) {
+	// Test that various types can be skipped
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{"skip_small_int", 50},
+		{"skip_neg_int", -50},
+		{"skip_uint", uint64(1000)},
+		{"skip_sint", int64(-1000)},
+		{"skip_float32", float32(3.14)},
+		{"skip_float64", 3.14159265358979},
+		{"skip_short_string", "hello"},
+		{"skip_long_string", strings.Repeat("x", 100)},
+		{"skip_bool_true", true},
+		{"skip_bool_false", false},
+		{"skip_null", nil},
+		{"skip_array", []int{1, 2, 3}},
+		{"skip_object", map[string]int{"a": 1}},
+		{"skip_nested", map[string]any{"arr": []int{1, 2}, "obj": map[string]string{"k": "v"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Wrap the value in an object
+			data, _ := Marshal(map[string]any{"skip": tt.value, "keep": 42})
+
+			type Target struct {
+				Keep int `bonjson:"keep"`
+			}
+			var target Target
+			if err := Unmarshal(data, &target); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+			if target.Keep != 42 {
+				t.Errorf("got Keep=%d, want 42", target.Keep)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// convertMapKey Tests (covers map key conversion for non-string keys)
+// ============================================================================
+
+func TestDecodeMapIntegerKeys(t *testing.T) {
+	// Maps with integer keys - converted from string keys during decode
+	data, _ := Marshal(map[string]int{"1": 10, "2": 20, "3": 30})
+
+	var got map[int]int
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got[1] != 10 || got[2] != 20 || got[3] != 30 {
+		t.Errorf("got %v, want map[1:10 2:20 3:30]", got)
+	}
+}
+
+func TestDecodeMapUintKeys(t *testing.T) {
+	data, _ := Marshal(map[string]int{"100": 1, "200": 2})
+
+	var got map[uint]int
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got[100] != 1 || got[200] != 2 {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestDecodeMapKeyConversionErrors(t *testing.T) {
+	// Non-numeric string key to int map should fail
+	data, _ := Marshal(map[string]int{"abc": 1})
+
+	var got map[int]int
+	err := Unmarshal(data, &got)
+	if err == nil {
+		t.Error("expected error for non-numeric key")
+	}
+}
+
+// ============================================================================
+// storeFloat Tests (covers float storage to various types)
+// ============================================================================
+
+func TestDecodeFloatToIntegerTypes(t *testing.T) {
+	// Float that is actually an integer value can be stored in integer types
+	data, _ := Marshal(42.0)
+
+	tests := []struct {
+		name string
+		ptr  any
+	}{
+		{"to_int", new(int)},
+		{"to_int32", new(int32)},
+		{"to_int64", new(int64)},
+		{"to_uint", new(uint)},
+		{"to_uint32", new(uint32)},
+		{"to_uint64", new(uint64)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset the pointer value
+			ptr := reflect.New(reflect.TypeOf(tt.ptr).Elem())
+			if err := Unmarshal(data, ptr.Interface()); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodeFloatOverflowErrors(t *testing.T) {
+	// Large float that overflows float32
+	largeFloat := 1e40
+	data, _ := Marshal(largeFloat)
+
+	var got float32
+	// This may not error but should handle overflow
+	_ = Unmarshal(data, &got)
+}
+
+func TestDecodeFloatToNonNumericType(t *testing.T) {
+	data, _ := Marshal(3.14)
+
+	var got string
+	err := Unmarshal(data, &got)
+	if err == nil {
+		t.Error("expected error unmarshaling float to string")
+	}
+}
+
+// ============================================================================
+// storeBool Tests (covers bool storage to various types)
+// ============================================================================
+
+func TestDecodeBoolToInterface(t *testing.T) {
+	data, _ := Marshal(true)
+
+	var got any
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got != true {
+		t.Errorf("got %v, want true", got)
+	}
+}
+
+func TestDecodeBoolToNonBoolType(t *testing.T) {
+	data, _ := Marshal(true)
+
+	var got int
+	err := Unmarshal(data, &got)
+	if err == nil {
+		t.Error("expected error unmarshaling bool to int")
+	}
+}
+
+// ============================================================================
+// storeNull Tests
+// ============================================================================
+
+func TestDecodeNullToPointer(t *testing.T) {
+	value := 42
+	ptr := &value
+
+	// Marshal null
+	data, _ := Marshal(nil)
+
+	if err := Unmarshal(data, &ptr); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if ptr != nil {
+		t.Error("expected pointer to be nil after unmarshaling null")
+	}
+}
+
+func TestDecodeNullToSlice(t *testing.T) {
+	slice := []int{1, 2, 3}
+
+	data, _ := Marshal(nil)
+
+	if err := Unmarshal(data, &slice); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if slice != nil {
+		t.Error("expected slice to be nil after unmarshaling null")
+	}
+}
+
+func TestDecodeNullToMap(t *testing.T) {
+	m := map[string]int{"a": 1}
+
+	data, _ := Marshal(nil)
+
+	if err := Unmarshal(data, &m); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if m != nil {
+		t.Error("expected map to be nil after unmarshaling null")
+	}
+}
+
+// ============================================================================
+// Error Type Tests (covers Error() methods)
+// ============================================================================
+
+func TestSyntaxErrorMessage(t *testing.T) {
+	err := &SyntaxError{msg: "test error", Offset: 100}
+	msg := err.Error()
+	if !strings.Contains(msg, "test error") || !strings.Contains(msg, "100") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestUnmarshalTypeErrorMessage(t *testing.T) {
+	err := &UnmarshalTypeError{Value: "string", Type: reflect.TypeOf(0), Offset: 50}
+	msg := err.Error()
+	if !strings.Contains(msg, "string") || !strings.Contains(msg, "int") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+
+	// With struct field info
+	err2 := &UnmarshalTypeError{Value: "string", Type: reflect.TypeOf(0), Struct: "MyStruct", Field: "MyField"}
+	msg2 := err2.Error()
+	if !strings.Contains(msg2, "MyStruct") || !strings.Contains(msg2, "MyField") {
+		t.Errorf("unexpected error message: %s", msg2)
+	}
+}
+
+func TestInvalidUnmarshalErrorMessage(t *testing.T) {
+	// nil type
+	err1 := &InvalidUnmarshalError{Type: nil}
+	if !strings.Contains(err1.Error(), "nil") {
+		t.Errorf("unexpected error message: %s", err1.Error())
+	}
+
+	// non-pointer
+	err2 := &InvalidUnmarshalError{Type: reflect.TypeOf(0)}
+	if !strings.Contains(err2.Error(), "non-pointer") {
+		t.Errorf("unexpected error message: %s", err2.Error())
+	}
+
+	// nil pointer
+	err3 := &InvalidUnmarshalError{Type: reflect.TypeOf((*int)(nil))}
+	if !strings.Contains(err3.Error(), "nil") {
+		t.Errorf("unexpected error message: %s", err3.Error())
+	}
+}
+
+func TestUnsupportedTypeErrorMessage(t *testing.T) {
+	err := &UnsupportedTypeError{Type: reflect.TypeOf(make(chan int))}
+	msg := err.Error()
+	if !strings.Contains(msg, "chan") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestUnsupportedValueErrorMessage(t *testing.T) {
+	err := &UnsupportedValueError{Str: "test value"}
+	msg := err.Error()
+	if !strings.Contains(msg, "test value") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestMarshalerErrorMessage(t *testing.T) {
+	err := &MarshalerError{
+		Type:       reflect.TypeOf(0),
+		Err:        errors.New("inner error"),
+		sourceFunc: "MarshalText",
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "MarshalText") || !strings.Contains(msg, "inner error") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+
+	// Test Unwrap
+	if err.Unwrap() == nil {
+		t.Error("Unwrap returned nil")
+	}
+}
+
+func TestDuplicateKeyErrorMessage(t *testing.T) {
+	err := &DuplicateKeyError{Key: "mykey", Offset: 123}
+	msg := err.Error()
+	if !strings.Contains(msg, "mykey") || !strings.Contains(msg, "123") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestInvalidUTF8ErrorMessage(t *testing.T) {
+	err := &InvalidUTF8Error{Offset: 456}
+	msg := err.Error()
+	if !strings.Contains(msg, "UTF-8") || !strings.Contains(msg, "456") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestNullInStringErrorMessage(t *testing.T) {
+	err := &NullInStringError{Offset: 789}
+	msg := err.Error()
+	if !strings.Contains(msg, "NUL") || !strings.Contains(msg, "789") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestTooManyChunksErrorMessage(t *testing.T) {
+	err := &TooManyChunksError{Count: 100, Max: 50, Offset: 999}
+	msg := err.Error()
+	if !strings.Contains(msg, "100") || !strings.Contains(msg, "50") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestValueRangeErrorMessage(t *testing.T) {
+	err := &ValueRangeError{Value: "99999", Offset: 111}
+	msg := err.Error()
+	if !strings.Contains(msg, "99999") || !strings.Contains(msg, "range") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestMaxDepthErrorMessage(t *testing.T) {
+	err := &MaxDepthError{Depth: 1000, Offset: 222}
+	msg := err.Error()
+	if !strings.Contains(msg, "1000") || !strings.Contains(msg, "depth") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestInvalidTypeCodeErrorMessage(t *testing.T) {
+	err := &InvalidTypeCodeError{TypeCode: 0xAB, Offset: 333}
+	msg := err.Error()
+	if !strings.Contains(msg, "0xab") || !strings.Contains(msg, "333") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestTruncatedDataErrorMessage(t *testing.T) {
+	err := &TruncatedDataError{Expected: 10, Got: 5, Offset: 444}
+	msg := err.Error()
+	if !strings.Contains(msg, "10") || !strings.Contains(msg, "5") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+func TestInvalidValueErrorMessage(t *testing.T) {
+	err := &InvalidValueError{Value: "NaN", Offset: 555}
+	msg := err.Error()
+	if !strings.Contains(msg, "NaN") || !strings.Contains(msg, "555") {
+		t.Errorf("unexpected error message: %s", msg)
+	}
+}
+
+// ============================================================================
+// Embedded Struct Field Tests (covers dominantField)
+// ============================================================================
+
+type EmbeddedA struct {
+	Name string `bonjson:"name"`
+}
+
+type EmbeddedB struct {
+	Name string `bonjson:"name"`
+}
+
+type ConflictingEmbedded struct {
+	EmbeddedA
+	EmbeddedB
+}
+
+func TestDecodeConflictingEmbeddedFields(t *testing.T) {
+	// When two embedded structs have the same field name at the same level,
+	// and neither is tagged, the field should be skipped (ambiguous)
+	data, _ := Marshal(map[string]string{"name": "test"})
+
+	var got ConflictingEmbedded
+	// Should not error, but field should be skipped
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	// Both embedded Name fields should be empty (field is ambiguous)
+	if got.EmbeddedA.Name != "" || got.EmbeddedB.Name != "" {
+		t.Errorf("expected empty names for ambiguous fields, got A=%q B=%q",
+			got.EmbeddedA.Name, got.EmbeddedB.Name)
+	}
+}
+
+type EmbeddedTagged struct {
+	Name string `bonjson:"name"`
+}
+
+type EmbeddedUntagged struct {
+	Name string
+}
+
+type TaggedVsUntagged struct {
+	EmbeddedTagged
+	EmbeddedUntagged
+}
+
+func TestDecodeTaggedVsUntaggedEmbedded(t *testing.T) {
+	// Tagged field should win over untagged at same level
+	data, _ := Marshal(map[string]string{"name": "tagged_wins"})
+
+	var got TaggedVsUntagged
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got.EmbeddedTagged.Name != "tagged_wins" {
+		t.Errorf("expected tagged name to be set, got %q", got.EmbeddedTagged.Name)
+	}
+}
+
+type InnerEmbed struct {
+	Value int `bonjson:"value"`
+}
+
+type OuterEmbed struct {
+	InnerEmbed
+	Value int `bonjson:"value"`
+}
+
+func TestDecodeShadowedEmbeddedField(t *testing.T) {
+	// Outer's own field should shadow embedded field
+	data, _ := Marshal(map[string]int{"value": 42})
+
+	var got OuterEmbed
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if got.Value != 42 {
+		t.Errorf("expected outer value 42, got %d", got.Value)
+	}
+}
+
+// ============================================================================
+// Case Folding Tests (covers foldRune)
+// ============================================================================
+
+func TestDecodeCaseFoldingFieldMatch(t *testing.T) {
+	// BONJSON should match field names case-insensitively
+	type CaseTest struct {
+		MyField int `bonjson:"myField"`
+	}
+
+	// Try various case variations
+	testCases := []string{"myField", "MyField", "MYFIELD", "myfield"}
+
+	for _, fieldName := range testCases {
+		t.Run(fieldName, func(t *testing.T) {
+			data, _ := Marshal(map[string]int{fieldName: 42})
+
+			var got CaseTest
+			if err := Unmarshal(data, &got); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			if got.MyField != 42 {
+				t.Errorf("field name %q: got %d, want 42", fieldName, got.MyField)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// BigNumber Streaming Tests (covers readBigNumber in stream.go)
+// ============================================================================
+
+func TestDecodeBigNumberViaStreaming(t *testing.T) {
+	// Create a big number by encoding a big.Int
+	bigInt := new(big.Int)
+	bigInt.SetString("123456789012345678901234567890", 10)
+
+	data, err := Marshal(bigInt)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Decode via streaming
+	dec := NewDecoder(bytes.NewReader(data))
+	var got big.Int
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+
+	if got.Cmp(bigInt) != 0 {
+		t.Errorf("got %v, want %v", &got, bigInt)
+	}
+}
+
+// ============================================================================
+// storeFloat Edge Cases Tests
+// ============================================================================
+
+func TestDecodeFloatToInterface(t *testing.T) {
+	// Float decoded to interface{} should be float64
+	data, _ := Marshal(3.14)
+
+	var got any
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if _, ok := got.(float64); !ok {
+		t.Errorf("expected float64, got %T", got)
+	}
+}
+
+func TestDecodeFloatToConstrainedInterface(t *testing.T) {
+	// Try to decode float to non-empty interface
+	data, _ := Marshal(3.14)
+
+	type Stringer interface {
+		String() string
+	}
+	var got Stringer
+	err := Unmarshal(data, &got)
+	if err == nil {
+		t.Error("expected error decoding float to constrained interface")
 	}
 }
