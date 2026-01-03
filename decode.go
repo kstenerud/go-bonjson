@@ -199,27 +199,54 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		return d.storeInt(int64(int8(tc)), pv, ut)
 
 	case tc >= typeUintBase && tc <= typeUintBase+7:
-		// Unsigned integer
+		// Unsigned integer (1-8 bytes, little-endian)
 		n := int(tc&0x07) + 1
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
 		var val uint64
-		for i := 0; i < n; i++ {
-			val |= uint64(d.data[d.offsetIntoData+i]) << (i * 8)
+		switch n {
+		case 1:
+			val = uint64(d.data[d.offsetIntoData])
+		case 2:
+			val = uint64(binary.LittleEndian.Uint16(d.data[d.offsetIntoData:]))
+		case 3:
+			val = uint64(d.data[d.offsetIntoData]) | uint64(d.data[d.offsetIntoData+1])<<8 | uint64(d.data[d.offsetIntoData+2])<<16
+		case 4:
+			val = uint64(binary.LittleEndian.Uint32(d.data[d.offsetIntoData:]))
+		case 5, 6, 7:
+			// Read 8 bytes and mask off the unused high bytes
+			var buf [8]byte
+			copy(buf[:], d.data[d.offsetIntoData:d.offsetIntoData+n])
+			val = binary.LittleEndian.Uint64(buf[:])
+		case 8:
+			val = binary.LittleEndian.Uint64(d.data[d.offsetIntoData:])
 		}
 		d.offsetIntoData += n
 		return d.storeUint(val, pv, ut)
 
 	case tc >= typeSintBase && tc <= typeSintBase+7:
-		// Signed integer
+		// Signed integer (1-8 bytes, little-endian)
 		n := int(tc&0x07) + 1
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
 		var val uint64
-		for i := 0; i < n; i++ {
-			val |= uint64(d.data[d.offsetIntoData+i]) << (i * 8)
+		switch n {
+		case 1:
+			val = uint64(d.data[d.offsetIntoData])
+		case 2:
+			val = uint64(binary.LittleEndian.Uint16(d.data[d.offsetIntoData:]))
+		case 3:
+			val = uint64(d.data[d.offsetIntoData]) | uint64(d.data[d.offsetIntoData+1])<<8 | uint64(d.data[d.offsetIntoData+2])<<16
+		case 4:
+			val = uint64(binary.LittleEndian.Uint32(d.data[d.offsetIntoData:]))
+		case 5, 6, 7:
+			var buf [8]byte
+			copy(buf[:], d.data[d.offsetIntoData:d.offsetIntoData+n])
+			val = binary.LittleEndian.Uint64(buf[:])
+		case 8:
+			val = binary.LittleEndian.Uint64(d.data[d.offsetIntoData:])
 		}
 		d.offsetIntoData += n
 		// Sign extend
