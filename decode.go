@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"unicode/utf8"
@@ -608,10 +609,8 @@ func (d *decodeState) storeBigNumberToBigInt(bn *BigNumber, v reflect.Value) err
 
 	// Convert significand from little-endian to big.Int
 	// big.Int.SetBytes expects big-endian
-	bigEndian := make([]byte, len(bn.Significand))
-	for i, b := range bn.Significand {
-		bigEndian[len(bn.Significand)-1-i] = b
-	}
+	bigEndian := slices.Clone(bn.Significand)
+	slices.Reverse(bigEndian)
 
 	sigInt := new(big.Int).SetBytes(bigEndian)
 
@@ -656,10 +655,8 @@ func (d *decodeState) storeBigNumberToBigFloat(bn *BigNumber, v reflect.Value) e
 	}
 
 	// Convert significand from little-endian to big.Int
-	bigEndian := make([]byte, len(bn.Significand))
-	for i, b := range bn.Significand {
-		bigEndian[len(bn.Significand)-1-i] = b
-	}
+	bigEndian := slices.Clone(bn.Significand)
+	slices.Reverse(bigEndian)
 
 	sigInt := new(big.Int).SetBytes(bigEndian)
 
@@ -692,8 +689,6 @@ func (d *decodeState) storeBigNumberToBigFloat(bn *BigNumber, v reflect.Value) e
 }
 
 func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnmarshaler) error {
-	// Combined UTF-8 validation and NUL check in a single pass
-	// This is more efficient than calling utf8.Valid and bytes.IndexByte separately
 	if err := d.validateString(s); err != nil {
 		return err
 	}
