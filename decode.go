@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"math"
 	"math/big"
@@ -219,24 +218,7 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		var val uint64
-		switch n {
-		case 1:
-			val = uint64(d.data[d.offsetIntoData])
-		case 2:
-			val = uint64(binary.LittleEndian.Uint16(d.data[d.offsetIntoData:]))
-		case 3:
-			val = uint64(d.data[d.offsetIntoData]) | uint64(d.data[d.offsetIntoData+1])<<8 | uint64(d.data[d.offsetIntoData+2])<<16
-		case 4:
-			val = uint64(binary.LittleEndian.Uint32(d.data[d.offsetIntoData:]))
-		case 5, 6, 7:
-			// Read 8 bytes and mask off the unused high bytes
-			var buf [8]byte
-			copy(buf[:], d.data[d.offsetIntoData:d.offsetIntoData+n])
-			val = binary.LittleEndian.Uint64(buf[:])
-		case 8:
-			val = binary.LittleEndian.Uint64(d.data[d.offsetIntoData:])
-		}
+		val := readLittleEndianUint64(d.data[d.offsetIntoData:], n)
 		d.offsetIntoData += n
 		return d.storeUint(val, pv, ut)
 
@@ -246,34 +228,9 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		var val uint64
-		switch n {
-		case 1:
-			val = uint64(d.data[d.offsetIntoData])
-		case 2:
-			val = uint64(binary.LittleEndian.Uint16(d.data[d.offsetIntoData:]))
-		case 3:
-			val = uint64(d.data[d.offsetIntoData]) | uint64(d.data[d.offsetIntoData+1])<<8 | uint64(d.data[d.offsetIntoData+2])<<16
-		case 4:
-			val = uint64(binary.LittleEndian.Uint32(d.data[d.offsetIntoData:]))
-		case 5, 6, 7:
-			var buf [8]byte
-			copy(buf[:], d.data[d.offsetIntoData:d.offsetIntoData+n])
-			val = binary.LittleEndian.Uint64(buf[:])
-		case 8:
-			val = binary.LittleEndian.Uint64(d.data[d.offsetIntoData:])
-		}
+		val := readLittleEndianUint64(d.data[d.offsetIntoData:], n)
 		d.offsetIntoData += n
-		// Sign extend
-		signedVal := int64(val)
-		if n < 8 {
-			signBit := uint64(1) << (n*8 - 1)
-			if val&signBit != 0 {
-				mask := ^uint64(0) << (n * 8)
-				signedVal = int64(val | mask)
-			}
-		}
-		return d.storeInt(signedVal, pv, ut)
+		return d.storeInt(signExtend(val, n), pv, ut)
 
 	case tc == typeFloat16:
 		f, err := decodeFloat16(d.data[d.offsetIntoData:])
@@ -580,23 +537,8 @@ func (d *decodeState) storeBigNumber(bn *BigNumber, origV reflect.Value, pv refl
 		return d.storeInt(0, v, ut)
 	}
 
-	// Build the significand value using binary.LittleEndian for efficiency
-	var sig uint64
-	switch len(bn.Significand) {
-	case 1:
-		sig = uint64(bn.Significand[0])
-	case 2:
-		sig = uint64(binary.LittleEndian.Uint16(bn.Significand))
-	case 3:
-		sig = uint64(bn.Significand[0]) | uint64(bn.Significand[1])<<8 | uint64(bn.Significand[2])<<16
-	case 4:
-		sig = uint64(binary.LittleEndian.Uint32(bn.Significand))
-	default:
-		// For 5-8 bytes, read as uint64 (padded with zeros)
-		var buf [8]byte
-		copy(buf[:], bn.Significand)
-		sig = binary.LittleEndian.Uint64(buf[:])
-	}
+	// Build the significand value using the helper function
+	sig := readLittleEndianUint64(bn.Significand, len(bn.Significand))
 
 	// For now, convert to float64 (a proper implementation would handle arbitrary precision)
 	f := float64(sig)

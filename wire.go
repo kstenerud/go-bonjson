@@ -15,6 +15,44 @@ import (
 // These functions operate directly on byte slices without allocations.
 
 // ============================================================================
+// Common Helper Functions
+// ============================================================================
+
+// readLittleEndianUint64 reads n bytes (1-8) from src as a little-endian uint64.
+// For aligned sizes (1, 2, 4, 8), uses direct binary.LittleEndian reads.
+// For unaligned sizes (3, 5, 6, 7), copies to a temp buffer first.
+// Caller must ensure len(src) >= n.
+func readLittleEndianUint64(src []byte, n int) uint64 {
+	switch n {
+	case 1:
+		return uint64(src[0])
+	case 2:
+		return uint64(binary.LittleEndian.Uint16(src))
+	case 4:
+		return uint64(binary.LittleEndian.Uint32(src))
+	case 8:
+		return binary.LittleEndian.Uint64(src)
+	default: // 3, 5, 6, 7 bytes
+		var buf [8]byte
+		copy(buf[:], src[:n])
+		return binary.LittleEndian.Uint64(buf[:])
+	}
+}
+
+// signExtend sign-extends an n-byte unsigned value to int64.
+// For n < 8, if the sign bit is set, the upper bits are filled with 1s.
+func signExtend(val uint64, n int) int64 {
+	if n < 8 {
+		signBit := uint64(1) << (n*8 - 1)
+		if val&signBit != 0 {
+			mask := ^uint64(0) << (n * 8)
+			val |= mask
+		}
+	}
+	return int64(val)
+}
+
+// ============================================================================
 // Length Field Encoding/Decoding
 // ============================================================================
 
@@ -99,34 +137,7 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 		return 0, 0, &TruncatedDataError{Expected: count, Got: len(src), Offset: 0}
 	}
 
-	// Fast path: read bytes efficiently, then shift
-	// This avoids the byte-by-byte loop
-	switch count {
-	case 1:
-		payload = uint64(header) >> 1
-	case 2:
-		payload = uint64(binary.LittleEndian.Uint16(src)) >> 2
-	case 3:
-		// Build 3 bytes manually to avoid reading past buffer
-		payload = uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
-		payload >>= 3
-	case 4:
-		payload = uint64(binary.LittleEndian.Uint32(src)) >> 4
-	default:
-		// For 5-8 bytes, read as much as we safely can
-		if len(src) >= 8 {
-			// Can safely read 8 bytes
-			payload = binary.LittleEndian.Uint64(src) >> count
-		} else {
-			// Build up the value - we know we have at least 'count' bytes
-			// Read 4 bytes + remaining bytes
-			payload = uint64(binary.LittleEndian.Uint32(src))
-			for i := 4; i < count; i++ {
-				payload |= uint64(src[i]) << (i * 8)
-			}
-			payload >>= count
-		}
-	}
+	payload = readLittleEndianUint64(src, count) >> count
 
 	return payload, count, nil
 }
@@ -203,33 +214,7 @@ func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint
 		if len(src) < n {
 			return 0, 0, 0, &TruncatedDataError{Expected: n, Got: len(src), Offset: 0}
 		}
-		// Read efficiently based on size
-		switch n {
-		case 1:
-			unsignedVal = uint64(src[0])
-		case 2:
-			unsignedVal = uint64(binary.LittleEndian.Uint16(src))
-		case 3:
-			if len(src) >= 4 {
-				unsignedVal = uint64(binary.LittleEndian.Uint32(src)) & 0xFFFFFF
-			} else {
-				unsignedVal = uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
-			}
-		case 4:
-			unsignedVal = uint64(binary.LittleEndian.Uint32(src))
-		default:
-			// For 5-8 bytes, read 8 and mask
-			if len(src) >= 8 {
-				unsignedVal = binary.LittleEndian.Uint64(src)
-				unsignedVal &= (uint64(1) << (n * 8)) - 1
-			} else {
-				// Not enough buffer for 8-byte read, build manually
-				unsignedVal = uint64(binary.LittleEndian.Uint32(src))
-				for i := 4; i < n; i++ {
-					unsignedVal |= uint64(src[i]) << (i * 8)
-				}
-			}
-		}
+		unsignedVal = readLittleEndianUint64(src, n)
 		return int64(unsignedVal), unsignedVal, n, nil
 
 	case typeCode >= typeSintBase && typeCode <= typeSintBase+7:
@@ -238,41 +223,8 @@ func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint
 		if len(src) < n {
 			return 0, 0, 0, &TruncatedDataError{Expected: n, Got: len(src), Offset: 0}
 		}
-		// Use sign fill trick from C: initialize with -1 if MSB is set (negative)
-		// This pre-fills upper bytes with 1s for sign extension
-		msb := src[n-1]
-		initVal := uint64(int8(msb) >> 7) // All 1s if negative, all 0s if positive
-
-		// Read efficiently based on size
-		switch n {
-		case 1:
-			unsignedVal = (initVal &^ 0xFF) | uint64(src[0])
-		case 2:
-			unsignedVal = (initVal &^ 0xFFFF) | uint64(binary.LittleEndian.Uint16(src))
-		case 3:
-			if len(src) >= 4 {
-				unsignedVal = (initVal &^ 0xFFFFFF) | (uint64(binary.LittleEndian.Uint32(src)) & 0xFFFFFF)
-			} else {
-				unsignedVal = (initVal &^ 0xFFFFFF) | uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16
-			}
-		case 4:
-			unsignedVal = (initVal &^ 0xFFFFFFFF) | uint64(binary.LittleEndian.Uint32(src))
-		default:
-			// For 5-8 bytes
-			if len(src) >= 8 {
-				unsignedVal = binary.LittleEndian.Uint64(src)
-				if n < 8 {
-					mask := (uint64(1) << (n * 8)) - 1
-					unsignedVal = (initVal &^ mask) | (unsignedVal & mask)
-				}
-			} else {
-				unsignedVal = (initVal &^ 0xFFFFFFFF) | uint64(binary.LittleEndian.Uint32(src))
-				for i := 4; i < n; i++ {
-					unsignedVal = (unsignedVal &^ (uint64(0xFF) << (i * 8))) | (uint64(src[i]) << (i * 8))
-				}
-			}
-		}
-		signedVal = int64(unsignedVal)
+		unsignedVal = readLittleEndianUint64(src, n)
+		signedVal = signExtend(unsignedVal, n)
 		return signedVal, unsignedVal, n, nil
 
 	default:

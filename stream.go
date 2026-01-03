@@ -212,31 +212,8 @@ func (dec *Decoder) readLengthField() (length uint64, continuation bool, err err
 		}
 	}
 
-	// Decode using binary.LittleEndian where possible
 	start := len(dec.buf) - count
-	var payload uint64
-	switch count {
-	case 1:
-		payload = uint64(header) >> 1
-	case 2:
-		payload = uint64(binary.LittleEndian.Uint16(dec.buf[start:])) >> 2
-	case 3:
-		payload = (uint64(dec.buf[start]) | uint64(dec.buf[start+1])<<8 | uint64(dec.buf[start+2])<<16) >> 3
-	case 4:
-		payload = uint64(binary.LittleEndian.Uint32(dec.buf[start:])) >> 4
-	default:
-		// For 5-8 bytes
-		if len(dec.buf)-start >= 8 {
-			payload = binary.LittleEndian.Uint64(dec.buf[start:]) >> count
-		} else {
-			// Build up the value
-			payload = uint64(binary.LittleEndian.Uint32(dec.buf[start:]))
-			for i := 4; i < count; i++ {
-				payload |= uint64(dec.buf[start+i]) << (i * 8)
-			}
-			payload >>= count
-		}
-	}
+	payload := readLittleEndianUint64(dec.buf[start:], count) >> count
 	return payload >> 1, (payload & 1) != 0, nil
 }
 
@@ -380,20 +357,7 @@ func (dec *Decoder) Token() (Token, error) {
 		if _, err := io.ReadFull(dec.r, buf[:n]); err != nil {
 			return nil, err
 		}
-		var val uint64
-		switch n {
-		case 1:
-			val = uint64(buf[0])
-		case 2:
-			val = uint64(binary.LittleEndian.Uint16(buf[:]))
-		case 3:
-			val = uint64(buf[0]) | uint64(buf[1])<<8 | uint64(buf[2])<<16
-		case 4:
-			val = uint64(binary.LittleEndian.Uint32(buf[:]))
-		default: // 5-8 bytes
-			val = binary.LittleEndian.Uint64(buf[:])
-		}
-		return val, nil
+		return readLittleEndianUint64(buf[:], n), nil
 
 	case tc >= typeSintBase && tc <= typeSintBase+7:
 		n := int(tc&0x07) + 1
@@ -401,28 +365,8 @@ func (dec *Decoder) Token() (Token, error) {
 		if _, err := io.ReadFull(dec.r, buf[:n]); err != nil {
 			return nil, err
 		}
-		var uval uint64
-		switch n {
-		case 1:
-			uval = uint64(buf[0])
-		case 2:
-			uval = uint64(binary.LittleEndian.Uint16(buf[:]))
-		case 3:
-			uval = uint64(buf[0]) | uint64(buf[1])<<8 | uint64(buf[2])<<16
-		case 4:
-			uval = uint64(binary.LittleEndian.Uint32(buf[:]))
-		default: // 5-8 bytes
-			uval = binary.LittleEndian.Uint64(buf[:])
-		}
-		val := int64(uval)
-		if n < 8 {
-			signBit := uint64(1) << (n*8 - 1)
-			if uval&signBit != 0 {
-				mask := ^uint64(0) << (n * 8)
-				val = int64(uval | mask)
-			}
-		}
-		return val, nil
+		uval := readLittleEndianUint64(buf[:], n)
+		return signExtend(uval, n), nil
 
 	case tc == typeFloat16:
 		buf := make([]byte, 2)
