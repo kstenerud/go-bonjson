@@ -106,7 +106,8 @@ func typeFields(t reflect.Type) structFields {
 			visited[f.typ] = true
 
 			// Scan f.typ for fields to include.
-			for i := 0; i < f.typ.NumField(); i++ {
+			numField := f.typ.NumField()
+			for i := 0; i < numField; i++ {
 				sf := f.typ.Field(i)
 				if sf.Anonymous {
 					t := sf.Type
