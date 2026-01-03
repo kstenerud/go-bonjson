@@ -5,6 +5,7 @@
 package bonjson
 
 import (
+	"bytes"
 	"encoding"
 	"encoding/base64"
 	"encoding/binary"
@@ -768,19 +769,20 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 // validateString performs combined UTF-8 validation and NUL check in a single pass.
 // This is more efficient than calling utf8.Valid and bytes.IndexByte separately,
 // especially for ASCII strings which are very common.
-// The NUL check is deferred to the end since it's an error condition (never hot).
 func (d *decodeState) validateString(s []byte) error {
-	checkNUL := !d.allowNUL
 	baseOff := d.off - len(s)
-	hasZero := false
+
+	// Use SIMD-optimized bytes.IndexByte for fast NUL detection upfront
+	var zeroIdx int = -1
+	if !d.allowNUL {
+		zeroIdx = bytes.IndexByte(s, 0)
+	}
 
 	for i := 0; i < len(s); {
 		b := s[i]
 
 		// Fast path for ASCII (most common case)
 		if b < utf8.RuneSelf {
-			// Defer NUL check to end of function using OR (b==0 is rare)
-			hasZero = hasZero || b == 0
 			i++
 			continue
 		}
@@ -794,13 +796,9 @@ func (d *decodeState) validateString(s []byte) error {
 		i += size
 	}
 
-	// Deferred NUL check (error path, never hot)
-	if checkNUL && hasZero {
-		for i, b := range s {
-			if b == 0 {
-				return &NullInStringError{Offset: int64(baseOff + i)}
-			}
-		}
+	// Return NUL error if found (zeroIdx is already computed)
+	if zeroIdx >= 0 {
+		return &NullInStringError{Offset: int64(baseOff + zeroIdx)}
 	}
 	return nil
 }
