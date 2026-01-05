@@ -185,14 +185,14 @@ const (
 	DupKeyReject DuplicateKeyMode = iota
 
 	// DupKeyKeepFirst keeps the first value for a duplicate key and silently
-	// ignores subsequent values with the same key.
+	// ignores subsequent values with the same key (the first value wins).
 	//
 	// WARNING: This mode silently discards data. The encoder produced multiple
 	// values for the same key, and all but the first are lost. This may hide
 	// bugs or data corruption in the encoding system.
 	DupKeyKeepFirst
 
-	// DupKeyReplace replaces earlier values with later values when duplicate
+	// DupKeyKeepLast replaces earlier values with later values when duplicate
 	// keys are encountered (last value wins).
 	//
 	// WARNING: This mode is DANGEROUS and is actively exploited in attacks.
@@ -204,5 +204,5 @@ const (
 	// This option exists only for compatibility with systems that expect this
 	// behavior. Do not use unless you fully understand the security implications
 	// and have no alternative.
-	DupKeyReplace
+	DupKeyKeepLast
 )

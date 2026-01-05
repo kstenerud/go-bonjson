@@ -707,7 +707,7 @@ func TestDuplicateKeyModeReplace(t *testing.T) {
 	buf.WriteByte(typeContainerEnd)
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
-	dec.SetDuplicateKeyMode(DupKeyReplace)
+	dec.SetDuplicateKeyMode(DupKeyKeepLast)
 
 	var v map[string]int
 	err := dec.Decode(&v)
@@ -775,7 +775,7 @@ func TestDuplicateKeyModeWithStruct(t *testing.T) {
 
 	t.Run("replace", func(t *testing.T) {
 		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
-		dec.SetDuplicateKeyMode(DupKeyReplace)
+		dec.SetDuplicateKeyMode(DupKeyKeepLast)
 
 		var v TestStruct
 		if err := dec.Decode(&v); err != nil {
@@ -815,7 +815,7 @@ func TestDuplicateKeyModeWithInterface(t *testing.T) {
 
 	t.Run("replace", func(t *testing.T) {
 		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
-		dec.SetDuplicateKeyMode(DupKeyReplace)
+		dec.SetDuplicateKeyMode(DupKeyKeepLast)
 
 		var v any
 		if err := dec.Decode(&v); err != nil {

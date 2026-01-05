@@ -1150,7 +1150,7 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 					return err
 				}
 				continue
-			case DupKeyReplace:
+			case DupKeyKeepLast:
 				// Fall through to decode and replace
 			}
 		}
@@ -1268,7 +1268,7 @@ func (d *decodeState) findStructFieldWithDupCheck(v reflect.Value, fields *struc
 		case DupKeyKeepFirst:
 			// Skip this value, keep the existing one
 			return reflect.Value{}, true
-		case DupKeyReplace:
+		case DupKeyKeepLast:
 			// Fall through to return field for replacement
 		}
 	}
@@ -1473,7 +1473,7 @@ func (d *decodeState) objectInterface() map[string]any {
 					return m
 				}
 				continue
-			case DupKeyReplace:
+			case DupKeyKeepLast:
 				// Fall through to decode and replace
 			}
 		}
