@@ -631,7 +631,10 @@ func float32Encoder(e *encodeState, v reflect.Value, opts encOpts) {
 			e.writeString(s)
 			return
 		case NaNInfAllow:
-			// Fall through to encode as float
+			// Encode directly as float32, bypassing encodeNumber's NaN/Inf check
+			n := encodeFloat32(e.scratch[:], float32(f))
+			e.Write(e.scratch[:n])
+			return
 		}
 	}
 	if opts.quoted {
@@ -663,7 +666,10 @@ func float64Encoder(e *encodeState, v reflect.Value, opts encOpts) {
 			e.writeString(s)
 			return
 		case NaNInfAllow:
-			// Fall through to encode as float
+			// Encode directly as float64, bypassing encodeNumber's NaN/Inf check
+			n := encodeFloat64(e.scratch[:], f)
+			e.Write(e.scratch[:n])
+			return
 		}
 	}
 	if opts.quoted {

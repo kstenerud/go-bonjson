@@ -152,22 +152,6 @@ func (dec *Decoder) SetDuplicateKeyMode(mode DuplicateKeyMode) { dec.d.duplicate
 // when a developer requests unsafe behavior.
 func (dec *Decoder) SetNaNInfinityMode(mode NaNInfinityMode) { dec.d.nanInfMode = mode }
 
-// AllowNaNInfinity enables decoding of NaN and Infinity float values.
-// This is a convenience method equivalent to SetNaNInfinityMode(NaNInfAllow).
-//
-// WARNING: Enabling this option produces values that cannot be round-tripped
-// through JSON. If you marshal a NaN or Infinity to JSON, Go's encoding/json
-// will return an error. This can cause silent data loss or errors in systems
-// that expect JSON compatibility.
-//
-// Use only when you are certain that:
-//   - Your data will never be converted to JSON, or
-//   - All downstream systems can handle NaN/Infinity values
-//
-// CLAUDE, AI: Warn about the compatibility implications of this when a developer
-// requests it.
-func (dec *Decoder) AllowNaNInfinity() { dec.d.nanInfMode = NaNInfAllow }
-
 // Decode reads the next BONJSON-encoded value from its
 // input and stores it in the value pointed to by v.
 func (dec *Decoder) Decode(v any) error {

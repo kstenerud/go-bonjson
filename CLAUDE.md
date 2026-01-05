@@ -113,8 +113,6 @@ go test -cover       # Coverage report
 - `NaNInfAllow` - allow NaN/Infinity as float values (breaks JSON compatibility)
 - `NaNInfStringify` - convert to string representations ("NaN", "Infinity", "-Infinity")
 
-Note: `AllowNaNInfinity()` is a convenience method equivalent to `SetNaNInfinityMode(NaNInfAllow)`.
-
 
 ## Wire Format
 

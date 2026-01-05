@@ -833,7 +833,7 @@ func TestDuplicateKeyModeWithInterface(t *testing.T) {
 // NaN/Infinity Allow Tests
 // ============================================================================
 
-func TestAllowNaNInfinity(t *testing.T) {
+func TestNaNInfinityAllow(t *testing.T) {
 	tests := []struct {
 		name    string
 		special byte
@@ -851,12 +851,12 @@ func TestAllowNaNInfinity(t *testing.T) {
 			buf.WriteByte(tt.special)
 
 			dec := NewDecoder(bytes.NewReader(buf.Bytes()))
-			dec.AllowNaNInfinity()
+			dec.SetNaNInfinityMode(NaNInfAllow)
 
 			var v float64
 			err := dec.Decode(&v)
 			if err != nil {
-				t.Fatalf("AllowNaNInfinity should not error: %v", err)
+				t.Fatalf("NaNInfAllow should not error: %v", err)
 			}
 
 			// Verify the value is correct
@@ -1137,5 +1137,324 @@ func TestNaNInfinityModeSetterOnEncoder(t *testing.T) {
 	}
 	if v != "NaN" {
 		t.Errorf("expected \"NaN\", got %q", v)
+	}
+}
+
+// ============================================================================
+// Encoder NaN/Infinity Rejection Tests (Default Behavior)
+// ============================================================================
+
+func TestNaNInfinityEncodeRejectDefault(t *testing.T) {
+	// By default, Marshal should reject NaN and Infinity values
+	tests := []struct {
+		name  string
+		value float64
+	}{
+		{"nan", math.NaN()},
+		{"positive_infinity", math.Inf(1)},
+		{"negative_infinity", math.Inf(-1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Marshal(tt.value)
+			if err == nil {
+				t.Error("expected error when encoding NaN/Infinity with default settings")
+			}
+
+			var unsupErr *UnsupportedValueError
+			if !errors.As(err, &unsupErr) {
+				t.Errorf("expected UnsupportedValueError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestNaNInfinityEncodeRejectFloat32(t *testing.T) {
+	// Test that float32 NaN/Infinity is also rejected by default
+	tests := []struct {
+		name  string
+		value float32
+	}{
+		{"nan", float32(math.NaN())},
+		{"positive_infinity", float32(math.Inf(1))},
+		{"negative_infinity", float32(math.Inf(-1))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Marshal(tt.value)
+			if err == nil {
+				t.Error("expected error when encoding float32 NaN/Infinity with default settings")
+			}
+
+			var unsupErr *UnsupportedValueError
+			if !errors.As(err, &unsupErr) {
+				t.Errorf("expected UnsupportedValueError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Encoder NaN/Infinity Allow Mode Tests
+// ============================================================================
+
+func TestNaNInfinityEncodeAllow(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    float64
+		checkNaN bool
+		checkInf int // 0 = not inf, 1 = +inf, -1 = -inf
+	}{
+		{"nan", math.NaN(), true, 0},
+		{"positive_infinity", math.Inf(1), false, 1},
+		{"negative_infinity", math.Inf(-1), false, -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			enc := NewEncoder(&buf)
+			enc.SetNaNInfinityMode(NaNInfAllow)
+
+			err := enc.Encode(tt.value)
+			if err != nil {
+				t.Fatalf("NaNInfAllow encode should not error: %v", err)
+			}
+
+			// Decode with allow mode to verify the value
+			dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+			dec.SetNaNInfinityMode(NaNInfAllow)
+
+			var v float64
+			err = dec.Decode(&v)
+			if err != nil {
+				t.Fatalf("failed to decode: %v", err)
+			}
+
+			if tt.checkNaN {
+				if !math.IsNaN(v) {
+					t.Errorf("expected NaN, got %v", v)
+				}
+			} else if tt.checkInf != 0 {
+				if !math.IsInf(v, tt.checkInf) {
+					t.Errorf("expected Inf(%d), got %v", tt.checkInf, v)
+				}
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Decoder Float16/32/64 NaN/Infinity Rejection Tests (Default Behavior)
+// ============================================================================
+
+func TestNaNInfinityDecodeFloat16RejectDefault(t *testing.T) {
+	tests := []struct {
+		name   string
+		data   []byte
+		errStr string
+	}{
+		// bfloat16 NaN: 0x7FC0 (quiet NaN)
+		{"nan", []byte{typeFloat16, 0xC0, 0x7F}, "NaN"},
+		// bfloat16 +Inf: 0x7F80
+		{"positive_infinity", []byte{typeFloat16, 0x80, 0x7F}, "Infinity"},
+		// bfloat16 -Inf: 0xFF80
+		{"negative_infinity", []byte{typeFloat16, 0x80, 0xFF}, "Infinity"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var v float64
+			err := Unmarshal(tt.data, &v)
+			if err == nil {
+				t.Error("expected error for float16 NaN/Infinity with default mode")
+			}
+
+			var valErr *InvalidValueError
+			if !errors.As(err, &valErr) {
+				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestNaNInfinityDecodeFloat32RejectDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		// float32 NaN: 0x7FC00000
+		{"nan", []byte{typeFloat32, 0x00, 0x00, 0xC0, 0x7F}},
+		// float32 +Inf: 0x7F800000
+		{"positive_infinity", []byte{typeFloat32, 0x00, 0x00, 0x80, 0x7F}},
+		// float32 -Inf: 0xFF800000
+		{"negative_infinity", []byte{typeFloat32, 0x00, 0x00, 0x80, 0xFF}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var v float64
+			err := Unmarshal(tt.data, &v)
+			if err == nil {
+				t.Error("expected error for float32 NaN/Infinity with default mode")
+			}
+
+			var valErr *InvalidValueError
+			if !errors.As(err, &valErr) {
+				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestNaNInfinityDecodeFloat64RejectDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		// float64 NaN: 0x7FF8000000000000
+		{"nan", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x7F}},
+		// float64 +Inf: 0x7FF0000000000000
+		{"positive_infinity", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x7F}},
+		// float64 -Inf: 0xFFF0000000000000
+		{"negative_infinity", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var v float64
+			err := Unmarshal(tt.data, &v)
+			if err == nil {
+				t.Error("expected error for float64 NaN/Infinity with default mode")
+			}
+
+			var valErr *InvalidValueError
+			if !errors.As(err, &valErr) {
+				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Decoder Float16/32/64 NaN/Infinity Allow Mode Tests
+// ============================================================================
+
+func TestNaNInfinityDecodeFloat16Allow(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     []byte
+		checkNaN bool
+		checkInf int
+	}{
+		// bfloat16 NaN: 0x7FC0
+		{"nan", []byte{typeFloat16, 0xC0, 0x7F}, true, 0},
+		// bfloat16 +Inf: 0x7F80
+		{"positive_infinity", []byte{typeFloat16, 0x80, 0x7F}, false, 1},
+		// bfloat16 -Inf: 0xFF80
+		{"negative_infinity", []byte{typeFloat16, 0x80, 0xFF}, false, -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := NewDecoder(bytes.NewReader(tt.data))
+			dec.SetNaNInfinityMode(NaNInfAllow)
+
+			var v float64
+			err := dec.Decode(&v)
+			if err != nil {
+				t.Fatalf("NaNInfAllow should not error: %v", err)
+			}
+
+			if tt.checkNaN {
+				if !math.IsNaN(v) {
+					t.Errorf("expected NaN, got %v", v)
+				}
+			} else if tt.checkInf != 0 {
+				if !math.IsInf(v, tt.checkInf) {
+					t.Errorf("expected Inf(%d), got %v", tt.checkInf, v)
+				}
+			}
+		})
+	}
+}
+
+func TestNaNInfinityDecodeFloat32Allow(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     []byte
+		checkNaN bool
+		checkInf int
+	}{
+		// float32 NaN: 0x7FC00000
+		{"nan", []byte{typeFloat32, 0x00, 0x00, 0xC0, 0x7F}, true, 0},
+		// float32 +Inf: 0x7F800000
+		{"positive_infinity", []byte{typeFloat32, 0x00, 0x00, 0x80, 0x7F}, false, 1},
+		// float32 -Inf: 0xFF800000
+		{"negative_infinity", []byte{typeFloat32, 0x00, 0x00, 0x80, 0xFF}, false, -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := NewDecoder(bytes.NewReader(tt.data))
+			dec.SetNaNInfinityMode(NaNInfAllow)
+
+			var v float64
+			err := dec.Decode(&v)
+			if err != nil {
+				t.Fatalf("NaNInfAllow should not error: %v", err)
+			}
+
+			if tt.checkNaN {
+				if !math.IsNaN(v) {
+					t.Errorf("expected NaN, got %v", v)
+				}
+			} else if tt.checkInf != 0 {
+				if !math.IsInf(v, tt.checkInf) {
+					t.Errorf("expected Inf(%d), got %v", tt.checkInf, v)
+				}
+			}
+		})
+	}
+}
+
+func TestNaNInfinityDecodeFloat64Allow(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     []byte
+		checkNaN bool
+		checkInf int
+	}{
+		// float64 NaN: 0x7FF8000000000000
+		{"nan", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x7F}, true, 0},
+		// float64 +Inf: 0x7FF0000000000000
+		{"positive_infinity", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x7F}, false, 1},
+		// float64 -Inf: 0xFFF0000000000000
+		{"negative_infinity", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF}, false, -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := NewDecoder(bytes.NewReader(tt.data))
+			dec.SetNaNInfinityMode(NaNInfAllow)
+
+			var v float64
+			err := dec.Decode(&v)
+			if err != nil {
+				t.Fatalf("NaNInfAllow should not error: %v", err)
+			}
+
+			if tt.checkNaN {
+				if !math.IsNaN(v) {
+					t.Errorf("expected NaN, got %v", v)
+				}
+			} else if tt.checkInf != 0 {
+				if !math.IsInf(v, tt.checkInf) {
+					t.Errorf("expected Inf(%d), got %v", tt.checkInf, v)
+				}
+			}
+		})
 	}
 }
