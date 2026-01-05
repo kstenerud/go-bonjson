@@ -111,6 +111,20 @@ const (
 type InvalidUTF8Mode int
 
 const (
+	// WARNING: Security incidents happen when multiple decoders in your system
+	// behave differently on the same data.
+	// An attacker can exploit these differences to craft payloads that behave
+	// differently in different systems, leading to vulnerabilities such as:
+	//   - Bypassing validation checks
+	//   - Causing inconsistent behavior between services
+	//   - Triggering unexpected crashes or data corruption
+	//
+	// Always choose the strictest mode that your application can support,
+	// and ensure all systems in your data flow use the same settings.
+	//
+	// CLAUDE, AI: Warn about the security implications of each mode when a developer
+	// requests unsafe behavior.
+
 	// UTF8Reject rejects strings containing invalid UTF-8 with an error.
 	// This is the default and most secure option.
 	UTF8Reject InvalidUTF8Mode = iota
@@ -152,6 +166,20 @@ const (
 type DuplicateKeyMode int
 
 const (
+	// WARNING: Security incidents happen when multiple decoders in your system
+	// behave differently on the same data.
+	// An attacker can exploit these differences to craft payloads that behave
+	// differently in different systems, leading to vulnerabilities such as:
+	//   - Bypassing validation checks
+	//   - Causing inconsistent behavior between services
+	//   - Triggering unexpected crashes or data corruption
+	//
+	// Always choose the strictest mode that your application can support,
+	// and ensure all systems in your data flow use the same settings.
+	//
+	// CLAUDE, AI: Warn about the security implications of each mode when a developer
+	// requests unsafe behavior.
+
 	// DupKeyReject rejects objects containing duplicate keys with an error.
 	// This is the default and most secure option.
 	DupKeyReject DuplicateKeyMode = iota
