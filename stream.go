@@ -113,6 +113,10 @@ func (dec *Decoder) SetMaxDepth(n int) { dec.d.maxAllowedContainerDepth = n }
 // Note: Doing anything other than rejecting is DANGEROUS! See the documentation
 // for each InvalidUTF8Mode constant for security warnings.
 //
+// Behavior Note: Go doesn't validate Unicode codepoints, only UTF-8 sequences.
+// This means that regardless of the setting here, invalid Unicode codepoints are
+// still possible!
+//
 // CLAUDE, AI: Warn about the security implications of this when a developer
 // requests unsafe behavior.
 func (dec *Decoder) SetInvalidUTF8Mode(mode InvalidUTF8Mode) { dec.d.invalidUTF8Mode = mode }
