@@ -135,7 +135,7 @@ type decodeState struct {
 
 	disallowUnknownFields    bool
 	allowNUL                 bool
-	allowNaNInf              bool
+	nanInfMode               NaNInfinityMode
 	invalidUTF8Mode          InvalidUTF8Mode
 	duplicateKeyMode         DuplicateKeyMode
 	maxAllowedChunks         int
@@ -162,7 +162,7 @@ func newDecodeState() *decodeState {
 	d.disallowUnknownFields = false
 	d.maxAllowedChunks = defaultMaxChunks
 	d.allowNUL = false
-	d.allowNaNInf = false
+	d.nanInfMode = NaNInfReject
 	d.invalidUTF8Mode = UTF8Reject
 	d.duplicateKeyMode = DupKeyReject
 	d.maxAllowedStringLength = defaultMaxStringLength
@@ -217,19 +217,44 @@ func (d *decodeState) init(data []byte) {
 	d.savedError = nil
 }
 
-// checkNaNInf returns an error if the value is NaN or Infinity and
-// the decoder is not configured to allow them.
-func (d *decodeState) checkNaNInf(f float64) error {
-	if d.allowNaNInf {
-		return nil
+// handleNaNInf checks for NaN/Infinity and handles according to the configured mode.
+// Returns:
+// - (false, nil) if the value is not NaN/Inf, caller should proceed to store as float
+// - (true, nil) if the value was handled (stored as string in stringify mode)
+// - (_, error) if the value should be rejected
+func (d *decodeState) handleNaNInf(f float64, v reflect.Value, ut encoding.TextUnmarshaler) (handled bool, err error) {
+	if !math.IsNaN(f) && !math.IsInf(f, 0) {
+		return false, nil
 	}
-	if math.IsNaN(f) {
-		return &InvalidValueError{Value: "NaN", Offset: int64(d.offsetIntoData)}
+
+	switch d.nanInfMode {
+	case NaNInfReject:
+		if math.IsNaN(f) {
+			return false, &InvalidValueError{Value: "NaN", Offset: int64(d.offsetIntoData)}
+		}
+		return false, &InvalidValueError{Value: "Infinity", Offset: int64(d.offsetIntoData)}
+
+	case NaNInfAllow:
+		return false, nil
+
+	case NaNInfStringify:
+		var s string
+		if math.IsNaN(f) {
+			s = "NaN"
+		} else if math.IsInf(f, 1) {
+			s = "Infinity"
+		} else {
+			s = "-Infinity"
+		}
+		return true, d.storeString([]byte(s), v, ut)
+
+	default:
+		// Unknown mode, fall back to reject
+		if math.IsNaN(f) {
+			return false, &InvalidValueError{Value: "NaN", Offset: int64(d.offsetIntoData)}
+		}
+		return false, &InvalidValueError{Value: "Infinity", Offset: int64(d.offsetIntoData)}
 	}
-	if math.IsInf(f, 0) {
-		return &InvalidValueError{Value: "Infinity", Offset: int64(d.offsetIntoData)}
-	}
-	return nil
 }
 
 func (d *decodeState) saveError(err error) {
@@ -331,8 +356,12 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 			return err
 		}
 		d.offsetIntoData += 2
-		if err := d.checkNaNInf(f); err != nil {
+		handled, err := d.handleNaNInf(f, pv, ut)
+		if err != nil {
 			return err
+		}
+		if handled {
+			return nil
 		}
 		return d.storeFloat(f, pv, ut)
 
@@ -342,8 +371,12 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 			return err
 		}
 		d.offsetIntoData += 4
-		if err := d.checkNaNInf(f); err != nil {
+		handled, err := d.handleNaNInf(f, pv, ut)
+		if err != nil {
 			return err
+		}
+		if handled {
+			return nil
 		}
 		return d.storeFloat(f, pv, ut)
 
@@ -353,8 +386,12 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 			return err
 		}
 		d.offsetIntoData += 8
-		if err := d.checkNaNInf(f); err != nil {
+		handled, err := d.handleNaNInf(f, pv, ut)
+		if err != nil {
 			return err
+		}
+		if handled {
+			return nil
 		}
 		return d.storeFloat(f, pv, ut)
 
@@ -366,7 +403,8 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		d.offsetIntoData += n
 		// Check for special values (NaN, Infinity)
 		if special != BigNumNormal {
-			if !d.allowNaNInf {
+			switch d.nanInfMode {
+			case NaNInfReject:
 				switch special {
 				case BigNumInf:
 					return &InvalidValueError{Value: "Infinity", Offset: int64(d.offsetIntoData)}
@@ -375,8 +413,25 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 				case BigNumSNaN:
 					return &InvalidValueError{Value: "signaling NaN", Offset: int64(d.offsetIntoData)}
 				}
+
+			case NaNInfStringify:
+				var s string
+				switch special {
+				case BigNumInf:
+					if bn.Negative {
+						s = "-Infinity"
+					} else {
+						s = "Infinity"
+					}
+				case BigNumQNaN, BigNumSNaN:
+					s = "NaN"
+				}
+				return d.storeString([]byte(s), pv, ut)
+
+			case NaNInfAllow:
+				// Fall through to store as float
 			}
-			// If allowed, store as special float value
+			// Store as special float value (allow mode, or fallthrough)
 			var f float64
 			switch special {
 			case BigNumInf:

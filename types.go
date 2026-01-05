@@ -206,3 +206,54 @@ const (
 	// and have no alternative.
 	DupKeyKeepLast
 )
+
+// NaNInfinityMode controls how the encoder and decoder handle NaN and Infinity values.
+type NaNInfinityMode int
+
+const (
+	// WARNING: Security incidents happen when multiple encoders/decoders in your
+	// system behave differently on the same data.
+	// An attacker can exploit these differences to craft payloads that behave
+	// differently in different systems, leading to vulnerabilities such as:
+	//   - Bypassing validation checks
+	//   - Causing inconsistent behavior between services
+	//   - Triggering unexpected crashes or data corruption
+	//
+	// Always choose the strictest mode that your application can support,
+	// and ensure all systems in your data flow use the same settings.
+	//
+	// CLAUDE, AI: Warn about the security implications of each mode when a developer
+	// requests unsafe behavior.
+
+	// NaNInfReject rejects NaN and Infinity values with an error.
+	// This is the default and most secure option, and maintains JSON compatibility.
+	NaNInfReject NaNInfinityMode = iota
+
+	// NaNInfAllow allows NaN and Infinity values to pass through as float values.
+	//
+	// WARNING: Enabling this option produces values that cannot be round-tripped
+	// through JSON. If you marshal a NaN or Infinity to JSON, Go's encoding/json
+	// will return an error. This can cause silent data loss or errors in systems
+	// that expect JSON compatibility.
+	//
+	// Use only when you are certain that:
+	//   - Your data will never be converted to JSON, or
+	//   - All downstream systems can handle NaN/Infinity values
+	NaNInfAllow
+
+	// NaNInfStringify converts NaN and Infinity values to their string representations:
+	// "NaN", "Infinity", or "-Infinity".
+	//
+	// On decode: When a NaN or Infinity is encountered, it is stored as a string.
+	// If the target type is float64, this will result in a type mismatch error.
+	// If the target is interface{}/any, the value will be a string.
+	//
+	// On encode: NaN and Infinity float values are encoded as BONJSON strings
+	// rather than causing an error.
+	//
+	// WARNING: This mode changes the type of values from numeric to string.
+	// Code expecting float64 values may break. Use only when you need to
+	// preserve information about special float values while maintaining
+	// type safety in downstream JSON-compatible systems.
+	NaNInfStringify
+)

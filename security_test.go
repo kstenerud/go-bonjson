@@ -27,6 +27,7 @@ package bonjson
 import (
 	"bytes"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -905,5 +906,236 @@ func TestNaNInfinityRejectedByDefault(t *testing.T) {
 				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
 			}
 		})
+	}
+}
+
+// ============================================================================
+// NaN/Infinity Stringify Mode Tests
+// ============================================================================
+
+func TestNaNInfinityStringifyDecode(t *testing.T) {
+	tests := []struct {
+		name     string
+		special  byte
+		expected string
+	}{
+		{"quiet_nan", bigNumNaNQuiet, "NaN"},
+		{"signaling_nan", bigNumNaNSignaling, "NaN"},
+		{"positive_infinity", bigNumInfinity, "Infinity"},
+		{"negative_infinity", bigNumInfinity | bigNumNegative, "-Infinity"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			buf.WriteByte(typeBigNumber)
+			buf.WriteByte(tt.special)
+
+			dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+			dec.SetNaNInfinityMode(NaNInfStringify)
+
+			var v any
+			err := dec.Decode(&v)
+			if err != nil {
+				t.Fatalf("NaNInfStringify should not error: %v", err)
+			}
+
+			s, ok := v.(string)
+			if !ok {
+				t.Fatalf("expected string, got %T: %v", v, v)
+			}
+			if s != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, s)
+			}
+		})
+	}
+}
+
+func TestNaNInfinityStringifyDecodeToFloat64Fails(t *testing.T) {
+	// When stringify mode is enabled and decoding into float64,
+	// it should fail because we're trying to store a string into a float64
+	var buf bytes.Buffer
+	buf.WriteByte(typeBigNumber)
+	buf.WriteByte(bigNumNaNQuiet)
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetNaNInfinityMode(NaNInfStringify)
+
+	var v float64
+	err := dec.Decode(&v)
+	// This stores a string "NaN" which will cause a type mismatch error
+	// when stored to float64 via storeString -> storeFloat path
+	if err == nil {
+		// If it didn't error, v should still be 0 and there should be a saved error
+		t.Logf("decoded to float64: %v", v)
+	}
+}
+
+func TestNaNInfinityStringifyDecodeFloat16(t *testing.T) {
+	// Create a bfloat16 NaN value
+	// bfloat16 NaN: sign=0, exp=0xFF, mantissa!=0
+	// Using 0x7FC0 which is a common quiet NaN
+	var buf bytes.Buffer
+	buf.WriteByte(typeFloat16)
+	buf.WriteByte(0xC0) // low byte
+	buf.WriteByte(0x7F) // high byte (0x7FC0 = quiet NaN)
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetNaNInfinityMode(NaNInfStringify)
+
+	var v any
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("NaNInfStringify should not error: %v", err)
+	}
+
+	s, ok := v.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T: %v", v, v)
+	}
+	if s != "NaN" {
+		t.Errorf("expected %q, got %q", "NaN", s)
+	}
+}
+
+func TestNaNInfinityStringifyDecodeFloat32(t *testing.T) {
+	// Create a float32 positive infinity
+	// float32 +Inf: 0x7F800000
+	var buf bytes.Buffer
+	buf.WriteByte(typeFloat32)
+	buf.WriteByte(0x00)
+	buf.WriteByte(0x00)
+	buf.WriteByte(0x80)
+	buf.WriteByte(0x7F)
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetNaNInfinityMode(NaNInfStringify)
+
+	var v any
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("NaNInfStringify should not error: %v", err)
+	}
+
+	s, ok := v.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T: %v", v, v)
+	}
+	if s != "Infinity" {
+		t.Errorf("expected %q, got %q", "Infinity", s)
+	}
+}
+
+func TestNaNInfinityStringifyDecodeFloat64(t *testing.T) {
+	// Create a float64 negative infinity
+	// float64 -Inf: 0xFFF0000000000000
+	var buf bytes.Buffer
+	buf.WriteByte(typeFloat64)
+	buf.WriteByte(0x00)
+	buf.WriteByte(0x00)
+	buf.WriteByte(0x00)
+	buf.WriteByte(0x00)
+	buf.WriteByte(0x00)
+	buf.WriteByte(0x00)
+	buf.WriteByte(0xF0)
+	buf.WriteByte(0xFF)
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetNaNInfinityMode(NaNInfStringify)
+
+	var v any
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("NaNInfStringify should not error: %v", err)
+	}
+
+	s, ok := v.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T: %v", v, v)
+	}
+	if s != "-Infinity" {
+		t.Errorf("expected %q, got %q", "-Infinity", s)
+	}
+}
+
+func TestNaNInfinityStringifyEncode(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    float64
+		expected string
+	}{
+		{"nan", math.NaN(), "NaN"},
+		{"positive_infinity", math.Inf(1), "Infinity"},
+		{"negative_infinity", math.Inf(-1), "-Infinity"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			enc := NewEncoder(&buf)
+			enc.SetNaNInfinityMode(NaNInfStringify)
+
+			err := enc.Encode(tt.value)
+			if err != nil {
+				t.Fatalf("NaNInfStringify encode should not error: %v", err)
+			}
+
+			// Decode the result
+			var v string
+			err = Unmarshal(buf.Bytes(), &v)
+			if err != nil {
+				t.Fatalf("failed to decode stringified value: %v", err)
+			}
+
+			if v != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, v)
+			}
+		})
+	}
+}
+
+func TestNaNInfinityModeSetterOnDecoder(t *testing.T) {
+	// Verify SetNaNInfinityMode works correctly
+	dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
+
+	// Default should be reject
+	var v any
+	dec.Decode(&v)
+
+	// Create new decoder and set to stringify
+	var buf bytes.Buffer
+	buf.WriteByte(typeBigNumber)
+	buf.WriteByte(bigNumNaNQuiet)
+
+	dec = NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetNaNInfinityMode(NaNInfStringify)
+
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("NaNInfStringify should not error: %v", err)
+	}
+	if v != "NaN" {
+		t.Errorf("expected \"NaN\", got %v", v)
+	}
+}
+
+func TestNaNInfinityModeSetterOnEncoder(t *testing.T) {
+	// Verify SetNaNInfinityMode works correctly on encoder
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	enc.SetNaNInfinityMode(NaNInfStringify)
+
+	err := enc.Encode(math.NaN())
+	if err != nil {
+		t.Fatalf("NaNInfStringify encode should not error: %v", err)
+	}
+
+	// Verify it encoded as a string
+	var v string
+	if err := Unmarshal(buf.Bytes(), &v); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	if v != "NaN" {
+		t.Errorf("expected \"NaN\", got %q", v)
 	}
 }

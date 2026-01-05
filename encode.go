@@ -121,6 +121,9 @@ type encodeState struct {
 	// path, to avoid cycles that could lead to a stack overflow.
 	ptrLevel uint
 	ptrSeen  map[any]struct{}
+
+	// NaN/Infinity handling mode
+	nanInfMode NaNInfinityMode
 }
 
 const startDetectingCyclesAfter = 1000
@@ -135,9 +138,10 @@ func newEncodeState() *encodeState {
 			panic("ptrEncoder.encode should have emptied ptrSeen via defers")
 		}
 		e.ptrLevel = 0
+		e.nanInfMode = NaNInfReject
 		return e
 	}
-	return &encodeState{ptrSeen: make(map[any]struct{})}
+	return &encodeState{ptrSeen: make(map[any]struct{}), nanInfMode: NaNInfReject}
 }
 
 // jsonError is an error wrapper type for internal use only.
@@ -428,8 +432,20 @@ func bigFloatEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 	}
 	// Check for special values (infinity)
 	if bf.IsInf() {
-		e.error(&UnsupportedValueError{v, "infinity"})
-		return
+		switch e.nanInfMode {
+		case NaNInfReject:
+			e.error(&UnsupportedValueError{v, "infinity"})
+			return
+		case NaNInfStringify:
+			if bf.Sign() < 0 {
+				e.writeString("-Infinity")
+			} else {
+				e.writeString("Infinity")
+			}
+			return
+		case NaNInfAllow:
+			// Fall through to encode as BigNumber (which will encode as special value)
+		}
 	}
 	bn := bigFloatToBigNumber(bf)
 	n := encodeBigNumber(e.scratch[:], bn)
@@ -600,7 +616,23 @@ func uintEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 func float32Encoder(e *encodeState, v reflect.Value, opts encOpts) {
 	f := v.Float()
 	if math.IsInf(f, 0) || math.IsNaN(f) {
-		e.error(&UnsupportedValueError{v, strconv.FormatFloat(f, 'g', -1, 32)})
+		switch e.nanInfMode {
+		case NaNInfReject:
+			e.error(&UnsupportedValueError{v, strconv.FormatFloat(f, 'g', -1, 32)})
+		case NaNInfStringify:
+			var s string
+			if math.IsNaN(f) {
+				s = "NaN"
+			} else if math.IsInf(f, 1) {
+				s = "Infinity"
+			} else {
+				s = "-Infinity"
+			}
+			e.writeString(s)
+			return
+		case NaNInfAllow:
+			// Fall through to encode as float
+		}
 	}
 	if opts.quoted {
 		e.writeString(strconv.FormatFloat(f, 'g', -1, 32))
@@ -616,7 +648,23 @@ func float32Encoder(e *encodeState, v reflect.Value, opts encOpts) {
 func float64Encoder(e *encodeState, v reflect.Value, opts encOpts) {
 	f := v.Float()
 	if math.IsInf(f, 0) || math.IsNaN(f) {
-		e.error(&UnsupportedValueError{v, strconv.FormatFloat(f, 'g', -1, 64)})
+		switch e.nanInfMode {
+		case NaNInfReject:
+			e.error(&UnsupportedValueError{v, strconv.FormatFloat(f, 'g', -1, 64)})
+		case NaNInfStringify:
+			var s string
+			if math.IsNaN(f) {
+				s = "NaN"
+			} else if math.IsInf(f, 1) {
+				s = "Infinity"
+			} else {
+				s = "-Infinity"
+			}
+			e.writeString(s)
+			return
+		case NaNInfAllow:
+			// Fall through to encode as float
+		}
 	}
 	if opts.quoted {
 		e.writeString(strconv.FormatFloat(f, 'g', -1, 64))

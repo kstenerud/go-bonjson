@@ -108,9 +108,12 @@ go test -cover       # Coverage report
 - `DupKeyKeepFirst` - keep first value, silently ignore duplicates
 - `DupKeyReplace` - replace with latest value (DANGEROUS - see warning in docs)
 
-**NaN/Infinity** (`AllowNaNInfinity`):
-- Default: reject NaN and Infinity values
-- `AllowNaNInfinity()` - allow these values (breaks JSON compatibility)
+**NaN/Infinity Handling** (`SetNaNInfinityMode`):
+- `NaNInfReject` (default) - return error on NaN/Infinity (JSON compatible)
+- `NaNInfAllow` - allow NaN/Infinity as float values (breaks JSON compatibility)
+- `NaNInfStringify` - convert to string representations ("NaN", "Infinity", "-Infinity")
+
+Note: `AllowNaNInfinity()` is a convenience method equivalent to `SetNaNInfinityMode(NaNInfAllow)`.
 
 
 ## Wire Format
@@ -196,6 +199,10 @@ For typical structs (<20 fields), linear search beats hash map lookup. The field
 - `SetMaxStringLength(0)` - unlimited string length (not recommended)
 - `SetMaxDepth(0)` - unlimited nesting (not recommended)
 - `SetMaxChunks(0)` - unlimited chunks (not recommended)
+- `SetNaNInfinityMode(NaNInfAllow)` - allow NaN/Infinity as float values
+- `SetNaNInfinityMode(NaNInfStringify)` - convert NaN/Infinity to strings
+
+Note: Both Encoder and Decoder support `SetNaNInfinityMode()` for consistent handling.
 
 
 ## Common Patterns

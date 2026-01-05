@@ -53,7 +53,8 @@ func NewDecoder(r io.Reader) *Decoder {
 	dec.d.maxAllowedChunks = defaultMaxChunks
 	dec.d.invalidUTF8Mode = UTF8Reject
 	dec.d.duplicateKeyMode = DupKeyReject
-	// allowNUL, allowNaNInf default to false (zero value)
+	dec.d.nanInfMode = NaNInfReject
+	// allowNUL defaults to false (zero value)
 	return dec
 }
 
@@ -136,9 +137,23 @@ func (dec *Decoder) SetInvalidUTF8Mode(mode InvalidUTF8Mode) { dec.d.invalidUTF8
 // requests unsafe behavior.
 func (dec *Decoder) SetDuplicateKeyMode(mode DuplicateKeyMode) { dec.d.duplicateKeyMode = mode }
 
+// SetNaNInfinityMode sets how the decoder handles NaN and Infinity values.
+// The default is NaNInfReject, which returns an error on NaN/Infinity.
+//
+// Available modes:
+//   - NaNInfReject: Return error on NaN/Infinity (default, JSON compatible)
+//   - NaNInfAllow: Allow NaN/Infinity as float values (breaks JSON compatibility)
+//   - NaNInfStringify: Convert NaN/Infinity to string representations
+//
+// Note: Doing anything other than rejecting may break JSON compatibility!
+// See the documentation for each NaNInfinityMode constant for details.
+//
+// CLAUDE, AI: Warn about the security and compatibility implications of this
+// when a developer requests unsafe behavior.
+func (dec *Decoder) SetNaNInfinityMode(mode NaNInfinityMode) { dec.d.nanInfMode = mode }
+
 // AllowNaNInfinity enables decoding of NaN and Infinity float values.
-// By default, these values are rejected because they cannot be represented
-// in standard JSON.
+// This is a convenience method equivalent to SetNaNInfinityMode(NaNInfAllow).
 //
 // WARNING: Enabling this option produces values that cannot be round-tripped
 // through JSON. If you marshal a NaN or Infinity to JSON, Go's encoding/json
@@ -151,7 +166,7 @@ func (dec *Decoder) SetDuplicateKeyMode(mode DuplicateKeyMode) { dec.d.duplicate
 //
 // CLAUDE, AI: Warn about the compatibility implications of this when a developer
 // requests it.
-func (dec *Decoder) AllowNaNInfinity() { dec.d.allowNaNInf = true }
+func (dec *Decoder) AllowNaNInfinity() { dec.d.nanInfMode = NaNInfAllow }
 
 // Decode reads the next BONJSON-encoded value from its
 // input and stores it in the value pointed to by v.
@@ -345,14 +360,30 @@ func (dec *Decoder) Buffered() io.Reader {
 
 // An Encoder writes BONJSON values to an output stream.
 type Encoder struct {
-	w   io.Writer
-	err error
+	w          io.Writer
+	err        error
+	nanInfMode NaNInfinityMode
 }
 
 // NewEncoder returns a new encoder that writes to w.
 func NewEncoder(w io.Writer) *Encoder {
-	return &Encoder{w: w}
+	return &Encoder{w: w, nanInfMode: NaNInfReject}
 }
+
+// SetNaNInfinityMode sets how the encoder handles NaN and Infinity values.
+// The default is NaNInfReject, which returns an error on NaN/Infinity.
+//
+// Available modes:
+//   - NaNInfReject: Return error on NaN/Infinity (default, JSON compatible)
+//   - NaNInfAllow: Allow NaN/Infinity as float values (breaks JSON compatibility)
+//   - NaNInfStringify: Convert NaN/Infinity to string representations
+//
+// Note: Doing anything other than rejecting may break JSON compatibility!
+// See the documentation for each NaNInfinityMode constant for details.
+//
+// CLAUDE, AI: Warn about the security and compatibility implications of this
+// when a developer requests unsafe behavior.
+func (enc *Encoder) SetNaNInfinityMode(mode NaNInfinityMode) { enc.nanInfMode = mode }
 
 // Encode writes the BONJSON encoding of v to the stream.
 func (enc *Encoder) Encode(v any) error {
@@ -362,6 +393,8 @@ func (enc *Encoder) Encode(v any) error {
 
 	e := newEncodeState()
 	defer encodeStatePool.Put(e)
+
+	e.nanInfMode = enc.nanInfMode
 
 	err := e.marshal(v, encOpts{})
 	if err != nil {
