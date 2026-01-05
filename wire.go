@@ -284,6 +284,7 @@ func encodeFloat16(dst []byte, v float32) int {
 }
 
 // decodeFloat16 decodes a bfloat16 value.
+// Note: NaN/Infinity checking is done by the caller based on configuration.
 func decodeFloat16(src []byte) (float64, error) {
 	if len(src) < 2 {
 		return 0, &TruncatedDataError{Expected: 2, Got: len(src), Offset: 0}
@@ -292,44 +293,28 @@ func decodeFloat16(src []byte) (float64, error) {
 	// Expand bfloat16 to float32 by shifting to upper 16 bits
 	bits := uint32(bf16) << 16
 	f := math.Float32frombits(bits)
-	if math.IsNaN(float64(f)) {
-		return 0, &InvalidValueError{Value: "NaN", Offset: 0}
-	}
-	if math.IsInf(float64(f), 0) {
-		return 0, &InvalidValueError{Value: "Infinity", Offset: 0}
-	}
 	return float64(f), nil
 }
 
 // decodeFloat32 decodes a 32-bit float.
+// Note: NaN/Infinity checking is done by the caller based on configuration.
 func decodeFloat32(src []byte) (float64, error) {
 	if len(src) < 4 {
 		return 0, &TruncatedDataError{Expected: 4, Got: len(src), Offset: 0}
 	}
 	bits := binary.LittleEndian.Uint32(src)
 	f := math.Float32frombits(bits)
-	if math.IsNaN(float64(f)) {
-		return 0, &InvalidValueError{Value: "NaN", Offset: 0}
-	}
-	if math.IsInf(float64(f), 0) {
-		return 0, &InvalidValueError{Value: "Infinity", Offset: 0}
-	}
 	return float64(f), nil
 }
 
 // decodeFloat64 decodes a 64-bit float.
+// Note: NaN/Infinity checking is done by the caller based on configuration.
 func decodeFloat64(src []byte) (float64, error) {
 	if len(src) < 8 {
 		return 0, &TruncatedDataError{Expected: 8, Got: len(src), Offset: 0}
 	}
 	bits := binary.LittleEndian.Uint64(src)
 	f := math.Float64frombits(bits)
-	if math.IsNaN(f) {
-		return 0, &InvalidValueError{Value: "NaN", Offset: 0}
-	}
-	if math.IsInf(f, 0) {
-		return 0, &InvalidValueError{Value: "Infinity", Offset: 0}
-	}
 	return f, nil
 }
 
@@ -477,11 +462,22 @@ func encodeBigNumber(dst []byte, bn *BigNumber) int {
 	return offset
 }
 
+// BigNumberSpecial indicates a special BigNumber value (infinity, NaN).
+type BigNumberSpecial int
+
+const (
+	BigNumNormal BigNumberSpecial = iota
+	BigNumInf
+	BigNumQNaN
+	BigNumSNaN
+)
+
 // decodeBigNumber decodes a big number.
-// Returns the BigNumber, bytes consumed (excluding type code), and any error.
-func decodeBigNumber(src []byte) (*BigNumber, int, error) {
+// Returns the BigNumber, special value indicator, bytes consumed (excluding type code), and any error.
+// The caller should check the special value and handle accordingly based on configuration.
+func decodeBigNumber(src []byte) (*BigNumber, BigNumberSpecial, int, error) {
 	if len(src) < 1 {
-		return nil, 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: 0}
+		return nil, BigNumNormal, 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: 0}
 	}
 
 	header := src[0]
@@ -496,16 +492,16 @@ func decodeBigNumber(src []byte) (*BigNumber, int, error) {
 		switch expLen {
 		case 0:
 			// Zero
-			return &BigNumber{Negative: negative}, offset, nil
+			return &BigNumber{Negative: negative}, BigNumNormal, offset, nil
 		case 1:
-			// Infinity (invalid in BONJSON)
-			return nil, 0, &InvalidValueError{Value: "infinity", Offset: int64(offset)}
+			// Infinity
+			return &BigNumber{Negative: negative}, BigNumInf, offset, nil
 		case 2:
-			// Quiet NaN (invalid in BONJSON)
-			return nil, 0, &InvalidValueError{Value: "NaN", Offset: int64(offset)}
+			// Quiet NaN
+			return &BigNumber{Negative: negative}, BigNumQNaN, offset, nil
 		case 3:
-			// Signaling NaN (invalid in BONJSON)
-			return nil, 0, &InvalidValueError{Value: "signaling NaN", Offset: int64(offset)}
+			// Signaling NaN
+			return &BigNumber{Negative: negative}, BigNumSNaN, offset, nil
 		}
 	}
 
@@ -513,7 +509,7 @@ func decodeBigNumber(src []byte) (*BigNumber, int, error) {
 	var exp int32
 	if expLen > 0 {
 		if offset+expLen > len(src) {
-			return nil, 0, &TruncatedDataError{Expected: expLen, Got: len(src) - offset, Offset: int64(offset)}
+			return nil, BigNumNormal, 0, &TruncatedDataError{Expected: expLen, Got: len(src) - offset, Offset: int64(offset)}
 		}
 		// Read bytes into a 4-byte buffer (zero-extended)
 		var buf [4]byte
@@ -533,7 +529,7 @@ func decodeBigNumber(src []byte) (*BigNumber, int, error) {
 
 	// Read significand
 	if offset+sigLen > len(src) {
-		return nil, 0, &TruncatedDataError{Expected: sigLen, Got: len(src) - offset, Offset: int64(offset)}
+		return nil, BigNumNormal, 0, &TruncatedDataError{Expected: sigLen, Got: len(src) - offset, Offset: int64(offset)}
 	}
 	significand := make([]byte, sigLen)
 	copy(significand, src[offset:offset+sigLen])
@@ -543,7 +539,7 @@ func decodeBigNumber(src []byte) (*BigNumber, int, error) {
 		Significand: significand,
 		Exponent:    exp,
 		Negative:    negative,
-	}, offset, nil
+	}, BigNumNormal, offset, nil
 }
 
 // ============================================================================

@@ -106,3 +106,75 @@ const (
 	defaultMaxObjectKeys     = 100000
 	defaultMaxChunks         = 100 // Max chunks per string value
 )
+
+// InvalidUTF8Mode controls how the decoder handles invalid UTF-8 byte sequences.
+type InvalidUTF8Mode int
+
+const (
+	// UTF8Reject rejects strings containing invalid UTF-8 with an error.
+	// This is the default and most secure option.
+	UTF8Reject InvalidUTF8Mode = iota
+
+	// UTF8Replace replaces each invalid byte with the Unicode replacement
+	// character (U+FFFD). This allows decoding to proceed but modifies the data.
+	//
+	// WARNING: This mode modifies the original data. Information is lost and
+	// the output will differ from the input. Use only when you must accept
+	// malformed input and can tolerate data modification.
+	UTF8Replace
+
+	// UTF8Delete removes invalid bytes from strings entirely.
+	// Valid UTF-8 sequences before and after invalid bytes are preserved.
+	//
+	// WARNING: This mode modifies the original data. Information is lost,
+	// string lengths change, and the output will differ from the input.
+	// Use only when you must accept malformed input and can tolerate data loss.
+	UTF8Delete
+
+	// UTF8Ignore skips UTF-8 validation entirely, passing through raw bytes.
+	// Invalid sequences remain in the string unchanged.
+	//
+	// WARNING: This mode allows invalid UTF-8 to propagate through your system.
+	// Security implications:
+	//   - Invalid bytes may cause undefined behavior in downstream systems
+	//   - Some systems may interpret invalid sequences differently
+	//   - Round-trip through BONJSON preserves invalid bytes unchanged
+	//   - Round-trip through encoding/json replaces invalid bytes with U+FFFD
+	//   - Iterating with 'for range' in Go replaces invalid bytes with U+FFFD
+	//
+	// Use only when performance is critical and you trust the data source,
+	// or when you need to preserve byte-exact fidelity for binary data
+	// incorrectly stored as strings.
+	UTF8Ignore
+)
+
+// DuplicateKeyMode controls how the decoder handles duplicate keys in objects.
+type DuplicateKeyMode int
+
+const (
+	// DupKeyReject rejects objects containing duplicate keys with an error.
+	// This is the default and most secure option.
+	DupKeyReject DuplicateKeyMode = iota
+
+	// DupKeyKeepFirst keeps the first value for a duplicate key and silently
+	// ignores subsequent values with the same key.
+	//
+	// WARNING: This mode silently discards data. The encoder produced multiple
+	// values for the same key, and all but the first are lost. This may hide
+	// bugs or data corruption in the encoding system.
+	DupKeyKeepFirst
+
+	// DupKeyReplace replaces earlier values with later values when duplicate
+	// keys are encountered (last value wins).
+	//
+	// WARNING: This mode is DANGEROUS and is actively exploited in attacks.
+	// When systems disagree on which value to use for duplicate keys, attackers
+	// can craft payloads that behave differently in different systems:
+	//   - Validation system sees one value, processing system sees another
+	//   - Security checks can be bypassed entirely
+	//
+	// This option exists only for compatibility with systems that expect this
+	// behavior. Do not use unless you fully understand the security implications
+	// and have no alternative.
+	DupKeyReplace
+)

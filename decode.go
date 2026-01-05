@@ -135,6 +135,9 @@ type decodeState struct {
 
 	disallowUnknownFields    bool
 	allowNUL                 bool
+	allowNaNInf              bool
+	invalidUTF8Mode          InvalidUTF8Mode
+	duplicateKeyMode         DuplicateKeyMode
 	maxAllowedChunks         int
 	maxAllowedStringLength   int64
 	maxAllowedContainerDepth int
@@ -159,6 +162,9 @@ func newDecodeState() *decodeState {
 	d.disallowUnknownFields = false
 	d.maxAllowedChunks = defaultMaxChunks
 	d.allowNUL = false
+	d.allowNaNInf = false
+	d.invalidUTF8Mode = UTF8Reject
+	d.duplicateKeyMode = DupKeyReject
 	d.maxAllowedStringLength = defaultMaxStringLength
 	d.maxAllowedContainerDepth = defaultMaxContainerDepth
 	d.containerDepth = 0
@@ -209,6 +215,21 @@ func (d *decodeState) init(data []byte) {
 	d.data = data
 	d.offsetIntoData = 0
 	d.savedError = nil
+}
+
+// checkNaNInf returns an error if the value is NaN or Infinity and
+// the decoder is not configured to allow them.
+func (d *decodeState) checkNaNInf(f float64) error {
+	if d.allowNaNInf {
+		return nil
+	}
+	if math.IsNaN(f) {
+		return &InvalidValueError{Value: "NaN", Offset: int64(d.offsetIntoData)}
+	}
+	if math.IsInf(f, 0) {
+		return &InvalidValueError{Value: "Infinity", Offset: int64(d.offsetIntoData)}
+	}
+	return nil
 }
 
 func (d *decodeState) saveError(err error) {
@@ -310,6 +331,9 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 			return err
 		}
 		d.offsetIntoData += 2
+		if err := d.checkNaNInf(f); err != nil {
+			return err
+		}
 		return d.storeFloat(f, pv, ut)
 
 	case tc == typeFloat32:
@@ -318,6 +342,9 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 			return err
 		}
 		d.offsetIntoData += 4
+		if err := d.checkNaNInf(f); err != nil {
+			return err
+		}
 		return d.storeFloat(f, pv, ut)
 
 	case tc == typeFloat64:
@@ -326,14 +353,43 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 			return err
 		}
 		d.offsetIntoData += 8
+		if err := d.checkNaNInf(f); err != nil {
+			return err
+		}
 		return d.storeFloat(f, pv, ut)
 
 	case tc == typeBigNumber:
-		bn, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
+		bn, special, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
 		d.offsetIntoData += n
+		// Check for special values (NaN, Infinity)
+		if special != BigNumNormal {
+			if !d.allowNaNInf {
+				switch special {
+				case BigNumInf:
+					return &InvalidValueError{Value: "Infinity", Offset: int64(d.offsetIntoData)}
+				case BigNumQNaN:
+					return &InvalidValueError{Value: "NaN", Offset: int64(d.offsetIntoData)}
+				case BigNumSNaN:
+					return &InvalidValueError{Value: "signaling NaN", Offset: int64(d.offsetIntoData)}
+				}
+			}
+			// If allowed, store as special float value
+			var f float64
+			switch special {
+			case BigNumInf:
+				if bn.Negative {
+					f = math.Inf(-1)
+				} else {
+					f = math.Inf(1)
+				}
+			case BigNumQNaN, BigNumSNaN:
+				f = math.NaN()
+			}
+			return d.storeFloat(f, pv, ut)
+		}
 		// For *big.Int and *big.Float, use the original value v to preserve type info
 		// since indirect() returns an invalid pv when TextUnmarshaler is found
 		return d.storeBigNumber(bn, v, pv, ut)
@@ -717,12 +773,13 @@ func (d *decodeState) storeBigNumberToBigFloat(bn *BigNumber, v reflect.Value) e
 }
 
 func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnmarshaler) error {
-	if err := d.validateString(s); err != nil {
+	processed, err := d.processString(s)
+	if err != nil {
 		return err
 	}
 
 	if ut != nil {
-		return ut.UnmarshalText(s)
+		return ut.UnmarshalText(processed)
 	}
 
 	if !v.IsValid() {
@@ -732,17 +789,17 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 	switch v.Kind() {
 	case reflect.Interface:
 		if v.NumMethod() == 0 {
-			v.Set(reflect.ValueOf(string(s)))
+			v.Set(reflect.ValueOf(string(processed)))
 			return nil
 		}
 		d.saveError(&UnmarshalTypeError{Value: "string", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	case reflect.String:
-		v.SetString(string(s))
+		v.SetString(string(processed))
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
 			// []byte - base64 decode
-			b := make([]byte, base64.StdEncoding.DecodedLen(len(s)))
-			n, err := base64.StdEncoding.Decode(b, s)
+			b := make([]byte, base64.StdEncoding.DecodedLen(len(processed)))
+			n, err := base64.StdEncoding.Decode(b, processed)
 			if err != nil {
 				d.saveError(err)
 				return nil
@@ -757,37 +814,125 @@ func (d *decodeState) storeString(s []byte, v reflect.Value, ut encoding.TextUnm
 	return nil
 }
 
-// validateString checks for NUL bytes and validates UTF-8 encoding.
-// Uses SIMD-optimized stdlib functions for both checks.
-// The loop only runs on the error path to find the exact invalid byte position.
-func (d *decodeState) validateString(s []byte) error {
+// processString validates and potentially transforms a string based on the
+// configured InvalidUTF8Mode. It also checks for NUL bytes if configured.
+// Returns the (potentially modified) string and any error.
+func (d *decodeState) processString(s []byte) ([]byte, error) {
 	baseOff := d.offsetIntoData - len(s)
 
+	// Fast path: UTF8Ignore skips all validation
+	if d.invalidUTF8Mode == UTF8Ignore {
+		if !d.allowNUL {
+			if zeroIdx := bytes.IndexByte(s, 0); zeroIdx >= 0 {
+				return nil, &NullInStringError{Offset: int64(baseOff + zeroIdx)}
+			}
+		}
+		return s, nil
+	}
+
+	// Fast path: valid UTF-8, just check for NUL
 	if utf8.Valid(s) {
 		if !d.allowNUL {
 			if zeroIdx := bytes.IndexByte(s, 0); zeroIdx >= 0 {
-				return &NullInStringError{Offset: int64(baseOff + zeroIdx)}
+				return nil, &NullInStringError{Offset: int64(baseOff + zeroIdx)}
 			}
 		}
-		return nil
+		return s, nil
 	}
 
-	// Error path only: find the exact position of the invalid byte
+	// Invalid UTF-8 detected - handle based on mode
+	switch d.invalidUTF8Mode {
+	case UTF8Reject:
+		// Find exact position for error reporting
+		for i := 0; i < len(s); {
+			if s[i] < utf8.RuneSelf {
+				i++
+				continue
+			}
+			_, size := utf8.DecodeRune(s[i:])
+			if size == 1 {
+				return nil, &InvalidUTF8Error{Offset: int64(baseOff + i)}
+			}
+			i += size
+		}
+		// Shouldn't reach here, but return original if we do
+		return s, nil
+
+	case UTF8Replace:
+		return d.replaceInvalidUTF8(s, baseOff)
+
+	case UTF8Delete:
+		return d.deleteInvalidUTF8(s, baseOff)
+
+	default:
+		// Unknown mode, fall back to reject
+		return nil, &InvalidUTF8Error{Offset: int64(baseOff)}
+	}
+}
+
+// replaceInvalidUTF8 replaces invalid UTF-8 bytes with U+FFFD.
+// Also checks for NUL bytes if configured to reject them.
+func (d *decodeState) replaceInvalidUTF8(s []byte, baseOff int) ([]byte, error) {
+	// Estimate output size: same as input plus some extra for replacements
+	// (U+FFFD is 3 bytes, replacing 1 invalid byte)
+	out := make([]byte, 0, len(s)+len(s)/4)
+
 	for i := 0; i < len(s); {
 		b := s[i]
 		if b < utf8.RuneSelf {
+			// ASCII byte
+			if b == 0 && !d.allowNUL {
+				return nil, &NullInStringError{Offset: int64(baseOff + i)}
+			}
+			out = append(out, b)
 			i++
 			continue
 		}
-		_, size := utf8.DecodeRune(s[i:])
-		if size == 1 {
-			return &InvalidUTF8Error{Offset: int64(baseOff + i)}
+
+		r, size := utf8.DecodeRune(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			// Invalid byte - replace with U+FFFD (3 bytes: 0xef 0xbf 0xbd)
+			out = append(out, 0xef, 0xbf, 0xbd)
+			i++
+		} else {
+			// Valid multi-byte rune
+			out = append(out, s[i:i+size]...)
+			i += size
 		}
-		i += size
 	}
 
-	// This shouldn't happen unless there's a bug in utf8.Valid
-	return nil
+	return out, nil
+}
+
+// deleteInvalidUTF8 removes invalid UTF-8 bytes from the string.
+// Also checks for NUL bytes if configured to reject them.
+func (d *decodeState) deleteInvalidUTF8(s []byte, baseOff int) ([]byte, error) {
+	out := make([]byte, 0, len(s))
+
+	for i := 0; i < len(s); {
+		b := s[i]
+		if b < utf8.RuneSelf {
+			// ASCII byte
+			if b == 0 && !d.allowNUL {
+				return nil, &NullInStringError{Offset: int64(baseOff + i)}
+			}
+			out = append(out, b)
+			i++
+			continue
+		}
+
+		r, size := utf8.DecodeRune(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			// Invalid byte - skip it (delete)
+			i++
+		} else {
+			// Valid multi-byte rune
+			out = append(out, s[i:i+size]...)
+			i += size
+		}
+	}
+
+	return out, nil
 }
 
 func (d *decodeState) storeBool(val bool, v reflect.Value, ut encoding.TextUnmarshaler) error {
@@ -983,6 +1128,33 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 			return err
 		}
 
+		// Convert key to appropriate type
+		kv, err := d.convertMapKey(kt, key, keyStart)
+		if err != nil {
+			d.saveError(err)
+			// Skip value and continue
+			if err := d.decodeValue(reflect.Value{}); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Check for duplicate key
+		if kv.IsValid() && v.MapIndex(kv).IsValid() {
+			switch d.duplicateKeyMode {
+			case DupKeyReject:
+				return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
+			case DupKeyKeepFirst:
+				// Skip this value, keep the existing one
+				if err := d.decodeValue(reflect.Value{}); err != nil {
+					return err
+				}
+				continue
+			case DupKeyReplace:
+				// Fall through to decode and replace
+			}
+		}
+
 		// Reset map element for reuse
 		mapElem.SetZero()
 
@@ -991,18 +1163,7 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 			return err
 		}
 
-		// Convert key to appropriate type and set in map
-		kv, err := d.convertMapKey(kt, key, keyStart)
-		if err != nil {
-			d.saveError(err)
-			continue
-		}
-
 		if kv.IsValid() {
-			// Check for duplicate key using the map itself
-			if v.MapIndex(kv).IsValid() {
-				return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
-			}
 			v.SetMapIndex(kv, mapElem)
 		}
 	}
@@ -1064,8 +1225,15 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 			return err
 		}
 
-		// Find field for key
-		fieldValue := d.findStructField(v, &fields, key, keyStart, seenFields)
+		// Find field for key and check for duplicates
+		fieldValue, skip := d.findStructFieldWithDupCheck(v, &fields, key, keyStart, seenFields)
+		if skip {
+			// Skip this value (duplicate with KeepFirst mode)
+			if err := d.decodeValue(reflect.Value{}); err != nil {
+				return err
+			}
+			continue
+		}
 
 		// Read value
 		if err := d.decodeValue(fieldValue); err != nil {
@@ -1075,7 +1243,10 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 	return nil
 }
 
-func (d *decodeState) findStructField(v reflect.Value, fields *structFields, key []byte, keyStart int, seenFields []bool) reflect.Value {
+// findStructFieldWithDupCheck finds the struct field for a key and handles duplicate detection.
+// Returns the field value and whether to skip decoding this value.
+// If skip is true, the caller should skip decoding this value entirely.
+func (d *decodeState) findStructFieldWithDupCheck(v reflect.Value, fields *structFields, key []byte, keyStart int, seenFields []bool) (reflect.Value, bool) {
 	f := fields.findByExactName(key)
 	if f == nil {
 		f = fields.findByFoldedName(key)
@@ -1085,13 +1256,21 @@ func (d *decodeState) findStructField(v reflect.Value, fields *structFields, key
 		if d.disallowUnknownFields {
 			d.saveError(fmt.Errorf("bonjson: unknown field %q", key))
 		}
-		return reflect.Value{}
+		return reflect.Value{}, false
 	}
 
 	// Check for duplicate using field's seenIndex
 	if seenFields[f.seenIndex] {
-		d.saveError(&DuplicateKeyError{Key: string(key), Offset: int64(keyStart)})
-		return reflect.Value{}
+		switch d.duplicateKeyMode {
+		case DupKeyReject:
+			d.saveError(&DuplicateKeyError{Key: string(key), Offset: int64(keyStart)})
+			return reflect.Value{}, false
+		case DupKeyKeepFirst:
+			// Skip this value, keep the existing one
+			return reflect.Value{}, true
+		case DupKeyReplace:
+			// Fall through to return field for replacement
+		}
 	}
 	seenFields[f.seenIndex] = true
 
@@ -1101,7 +1280,7 @@ func (d *decodeState) findStructField(v reflect.Value, fields *structFields, key
 			if subv.IsNil() {
 				if !subv.CanSet() {
 					d.saveError(fmt.Errorf("bonjson: cannot set embedded pointer to unexported struct: %v", subv.Type().Elem()))
-					return reflect.Value{}
+					return reflect.Value{}, false
 				}
 				subv.Set(reflect.New(subv.Type().Elem()))
 			}
@@ -1109,7 +1288,7 @@ func (d *decodeState) findStructField(v reflect.Value, fields *structFields, key
 		}
 		subv = subv.Field(ind)
 	}
-	return subv
+	return subv, false
 }
 
 // readString reads a string value from the input
@@ -1127,10 +1306,7 @@ func (d *decodeState) readString() ([]byte, error) {
 		}
 		s := d.data[d.offsetIntoData : d.offsetIntoData+length]
 		d.offsetIntoData += length
-		if err := d.validateString(s); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return d.processString(s)
 
 	case tc == typeLongString:
 		s, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedChunks, d.maxAllowedStringLength)
@@ -1138,10 +1314,7 @@ func (d *decodeState) readString() ([]byte, error) {
 			return nil, err
 		}
 		d.offsetIntoData += n
-		if err := d.validateString(s); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return d.processString(s)
 
 	default:
 		return nil, &SyntaxError{msg: "expected string", Offset: int64(d.offsetIntoData - 1)}
@@ -1188,7 +1361,7 @@ func (d *decodeState) skipValue(tc byte) error {
 		d.offsetIntoData += 8
 		return nil
 	case tc == typeBigNumber:
-		_, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
+		_, _, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
@@ -1289,8 +1462,20 @@ func (d *decodeState) objectInterface() map[string]any {
 		keyStr := string(key)
 		// Check for duplicate key using the map itself
 		if _, exists := m[keyStr]; exists {
-			d.saveError(&DuplicateKeyError{Key: keyStr, Offset: int64(keyStart)})
-			return m
+			switch d.duplicateKeyMode {
+			case DupKeyReject:
+				d.saveError(&DuplicateKeyError{Key: keyStr, Offset: int64(keyStart)})
+				return m
+			case DupKeyKeepFirst:
+				// Skip this value, keep the existing one
+				if err := d.decodeValue(reflect.Value{}); err != nil {
+					d.saveError(err)
+					return m
+				}
+				continue
+			case DupKeyReplace:
+				// Fall through to decode and replace
+			}
 		}
 
 		var val any

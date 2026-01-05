@@ -523,3 +523,387 @@ func TestShortStringBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// Invalid UTF-8 Handling Mode Tests
+// ============================================================================
+
+func TestInvalidUTF8ModeReplace(t *testing.T) {
+	// Create string with invalid UTF-8: "hello" + invalid byte + "world"
+	var buf bytes.Buffer
+	buf.WriteByte(typeShortStringBase + 11) // 11 bytes total
+	buf.Write([]byte("hello"))
+	buf.WriteByte(0xff) // invalid UTF-8 byte
+	buf.Write([]byte("world"))
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetInvalidUTF8Mode(UTF8Replace)
+
+	var v string
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("UTF8Replace should not error: %v", err)
+	}
+
+	// Should replace 0xff with U+FFFD (replacement character)
+	expected := "hello\uFFFDworld"
+	if v != expected {
+		t.Errorf("got %q, expected %q", v, expected)
+	}
+}
+
+func TestInvalidUTF8ModeDelete(t *testing.T) {
+	// Create string with invalid UTF-8: "hello" + invalid byte + "world"
+	var buf bytes.Buffer
+	buf.WriteByte(typeShortStringBase + 11) // 11 bytes total
+	buf.Write([]byte("hello"))
+	buf.WriteByte(0xff) // invalid UTF-8 byte
+	buf.Write([]byte("world"))
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetInvalidUTF8Mode(UTF8Delete)
+
+	var v string
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("UTF8Delete should not error: %v", err)
+	}
+
+	// Should delete the invalid byte
+	expected := "helloworld"
+	if v != expected {
+		t.Errorf("got %q, expected %q", v, expected)
+	}
+}
+
+func TestInvalidUTF8ModeIgnore(t *testing.T) {
+	// Create string with invalid UTF-8: "hello" + invalid byte + "world"
+	var buf bytes.Buffer
+	buf.WriteByte(typeShortStringBase + 11) // 11 bytes total
+	buf.Write([]byte("hello"))
+	buf.WriteByte(0xff) // invalid UTF-8 byte
+	buf.Write([]byte("world"))
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetInvalidUTF8Mode(UTF8Ignore)
+
+	var v string
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("UTF8Ignore should not error: %v", err)
+	}
+
+	// Should pass through the invalid byte unchanged
+	expected := "hello\xffworld"
+	if v != expected {
+		t.Errorf("got %q, expected %q", v, expected)
+	}
+}
+
+func TestInvalidUTF8ModeRejectDefault(t *testing.T) {
+	// Create string with invalid UTF-8
+	var buf bytes.Buffer
+	buf.WriteByte(typeShortStringBase + 6)
+	buf.Write([]byte("hello"))
+	buf.WriteByte(0xff) // invalid UTF-8 byte
+
+	var v string
+	err := Unmarshal(buf.Bytes(), &v)
+	if err == nil {
+		t.Error("expected error for invalid UTF-8 with default mode")
+	}
+
+	var utf8Err *InvalidUTF8Error
+	if !errors.As(err, &utf8Err) {
+		t.Errorf("expected InvalidUTF8Error, got %T: %v", err, err)
+	}
+}
+
+func TestInvalidUTF8ModeWithMultipleInvalidBytes(t *testing.T) {
+	// Helper to create string with multiple invalid UTF-8 bytes
+	// Content: a + 0x80 + b + 0xff + c + 0xfe + d = 7 bytes
+	makeTestData := func() []byte {
+		var buf bytes.Buffer
+		buf.WriteByte(typeShortStringBase + 7) // 7 bytes
+		buf.Write([]byte("a"))
+		buf.WriteByte(0x80) // invalid
+		buf.Write([]byte("b"))
+		buf.WriteByte(0xff) // invalid
+		buf.Write([]byte("c"))
+		buf.WriteByte(0xfe) // invalid
+		buf.Write([]byte("d"))
+		return buf.Bytes()
+	}
+
+	t.Run("replace", func(t *testing.T) {
+		dec := NewDecoder(bytes.NewReader(makeTestData()))
+		dec.SetInvalidUTF8Mode(UTF8Replace)
+
+		var v string
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		expected := "a\uFFFDb\uFFFDc\uFFFDd"
+		if v != expected {
+			t.Errorf("got %q, expected %q", v, expected)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		dec := NewDecoder(bytes.NewReader(makeTestData()))
+		dec.SetInvalidUTF8Mode(UTF8Delete)
+
+		var v string
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		expected := "abcd"
+		if v != expected {
+			t.Errorf("got %q, expected %q", v, expected)
+		}
+	})
+}
+
+// ============================================================================
+// Duplicate Key Handling Mode Tests
+// ============================================================================
+
+func TestDuplicateKeyModeKeepFirst(t *testing.T) {
+	// Object: {"a": 1, "a": 2}
+	var buf bytes.Buffer
+	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x01) // value 1
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x02) // value 2
+	buf.WriteByte(typeContainerEnd)
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetDuplicateKeyMode(DupKeyKeepFirst)
+
+	var v map[string]int
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("DupKeyKeepFirst should not error: %v", err)
+	}
+
+	if v["a"] != 1 {
+		t.Errorf("expected a=1 (first value), got a=%d", v["a"])
+	}
+}
+
+func TestDuplicateKeyModeReplace(t *testing.T) {
+	// Object: {"a": 1, "a": 2}
+	var buf bytes.Buffer
+	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x01) // value 1
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x02) // value 2
+	buf.WriteByte(typeContainerEnd)
+
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.SetDuplicateKeyMode(DupKeyReplace)
+
+	var v map[string]int
+	err := dec.Decode(&v)
+	if err != nil {
+		t.Fatalf("DupKeyReplace should not error: %v", err)
+	}
+
+	if v["a"] != 2 {
+		t.Errorf("expected a=2 (last value), got a=%d", v["a"])
+	}
+}
+
+func TestDuplicateKeyModeRejectDefault(t *testing.T) {
+	// Object: {"a": 1, "a": 2}
+	var buf bytes.Buffer
+	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x01)
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x02)
+	buf.WriteByte(typeContainerEnd)
+
+	var v map[string]int
+	err := Unmarshal(buf.Bytes(), &v)
+	if err == nil {
+		t.Error("expected error for duplicate key with default mode")
+	}
+
+	var dupErr *DuplicateKeyError
+	if !errors.As(err, &dupErr) {
+		t.Errorf("expected DuplicateKeyError, got %T: %v", err, err)
+	}
+}
+
+func TestDuplicateKeyModeWithStruct(t *testing.T) {
+	type TestStruct struct {
+		A int `json:"a"`
+	}
+
+	// Object: {"a": 1, "a": 2}
+	var buf bytes.Buffer
+	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x01)
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x02)
+	buf.WriteByte(typeContainerEnd)
+
+	t.Run("keep_first", func(t *testing.T) {
+		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+		dec.SetDuplicateKeyMode(DupKeyKeepFirst)
+
+		var v TestStruct
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if v.A != 1 {
+			t.Errorf("expected A=1, got A=%d", v.A)
+		}
+	})
+
+	t.Run("replace", func(t *testing.T) {
+		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+		dec.SetDuplicateKeyMode(DupKeyReplace)
+
+		var v TestStruct
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if v.A != 2 {
+			t.Errorf("expected A=2, got A=%d", v.A)
+		}
+	})
+}
+
+func TestDuplicateKeyModeWithInterface(t *testing.T) {
+	// Object: {"a": 1, "a": 2}
+	var buf bytes.Buffer
+	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x01)
+	buf.WriteByte(typeShortStringBase + 1)
+	buf.WriteByte('a')
+	buf.WriteByte(0x02)
+	buf.WriteByte(typeContainerEnd)
+
+	t.Run("keep_first", func(t *testing.T) {
+		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+		dec.SetDuplicateKeyMode(DupKeyKeepFirst)
+
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		m := v.(map[string]any)
+		if m["a"].(int64) != 1 {
+			t.Errorf("expected a=1, got a=%v", m["a"])
+		}
+	})
+
+	t.Run("replace", func(t *testing.T) {
+		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+		dec.SetDuplicateKeyMode(DupKeyReplace)
+
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		m := v.(map[string]any)
+		if m["a"].(int64) != 2 {
+			t.Errorf("expected a=2, got a=%v", m["a"])
+		}
+	})
+}
+
+// ============================================================================
+// NaN/Infinity Allow Tests
+// ============================================================================
+
+func TestAllowNaNInfinity(t *testing.T) {
+	tests := []struct {
+		name    string
+		special byte
+	}{
+		{"quiet_nan", bigNumNaNQuiet},
+		{"signaling_nan", bigNumNaNSignaling},
+		{"positive_infinity", bigNumInfinity},
+		{"negative_infinity", bigNumInfinity | bigNumNegative},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			buf.WriteByte(typeBigNumber)
+			buf.WriteByte(tt.special)
+
+			dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+			dec.AllowNaNInfinity()
+
+			var v float64
+			err := dec.Decode(&v)
+			if err != nil {
+				t.Fatalf("AllowNaNInfinity should not error: %v", err)
+			}
+
+			// Verify the value is correct
+			switch tt.special & 0x06 { // mask out negative bit
+			case bigNumNaNQuiet, bigNumNaNSignaling:
+				if v == v { // NaN != NaN
+					t.Errorf("expected NaN, got %v", v)
+				}
+			case bigNumInfinity:
+				if tt.special&bigNumNegative != 0 {
+					if v >= 0 {
+						t.Errorf("expected negative infinity, got %v", v)
+					}
+				} else {
+					if v <= 0 {
+						t.Errorf("expected positive infinity, got %v", v)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestNaNInfinityRejectedByDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		special byte
+	}{
+		{"quiet_nan", bigNumNaNQuiet},
+		{"positive_infinity", bigNumInfinity},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			buf.WriteByte(typeBigNumber)
+			buf.WriteByte(tt.special)
+
+			var v float64
+			err := Unmarshal(buf.Bytes(), &v)
+			if err == nil {
+				t.Error("expected error for NaN/Infinity with default mode")
+			}
+
+			var valErr *InvalidValueError
+			if !errors.As(err, &valErr) {
+				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
+			}
+		})
+	}
+}

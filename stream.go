@@ -51,6 +51,9 @@ func NewDecoder(r io.Reader) *Decoder {
 	dec.d.maxAllowedStringLength = defaultMaxStringLength
 	dec.d.maxAllowedContainerDepth = defaultMaxContainerDepth
 	dec.d.maxAllowedChunks = defaultMaxChunks
+	dec.d.invalidUTF8Mode = UTF8Reject
+	dec.d.duplicateKeyMode = DupKeyReject
+	// allowNUL, allowNaNInf default to false (zero value)
 	return dec
 }
 
@@ -74,6 +77,43 @@ func (dec *Decoder) SetMaxStringLength(n int64) { dec.d.maxAllowedStringLength =
 // SetMaxDepth sets the maximum allowed nesting depth for arrays and objects.
 // The default is 1000. Set to 0 to allow unlimited depth (not recommended).
 func (dec *Decoder) SetMaxDepth(n int) { dec.d.maxAllowedContainerDepth = n }
+
+// SetInvalidUTF8Mode sets how the decoder handles invalid UTF-8 byte sequences.
+// The default is UTF8Reject, which returns an error on invalid UTF-8.
+//
+// Available modes:
+//   - UTF8Reject: Return error on invalid UTF-8 (default, most secure)
+//   - UTF8Replace: Replace invalid bytes with U+FFFD (modifies data)
+//   - UTF8Delete: Remove invalid bytes entirely (modifies data, changes length)
+//   - UTF8Ignore: Skip validation, pass through raw bytes (allows invalid UTF-8)
+//
+// See the documentation for each InvalidUTF8Mode constant for security warnings.
+func (dec *Decoder) SetInvalidUTF8Mode(mode InvalidUTF8Mode) { dec.d.invalidUTF8Mode = mode }
+
+// SetDuplicateKeyMode sets how the decoder handles duplicate keys in objects.
+// The default is DupKeyReject, which returns an error on duplicate keys.
+//
+// Available modes:
+//   - DupKeyReject: Return error on duplicate keys (default, most secure)
+//   - DupKeyKeepFirst: Keep first value, silently ignore duplicates
+//   - DupKeyReplace: Replace with latest value (DANGEROUS - see warning)
+//
+// See the documentation for each DuplicateKeyMode constant for security warnings.
+func (dec *Decoder) SetDuplicateKeyMode(mode DuplicateKeyMode) { dec.d.duplicateKeyMode = mode }
+
+// AllowNaNInfinity enables decoding of NaN and Infinity float values.
+// By default, these values are rejected because they cannot be represented
+// in standard JSON.
+//
+// WARNING: Enabling this option produces values that cannot be round-tripped
+// through JSON. If you marshal a NaN or Infinity to JSON, Go's encoding/json
+// will return an error. This can cause silent data loss or errors in systems
+// that expect JSON compatibility.
+//
+// Use only when you are certain that:
+//   - Your data will never be converted to JSON, or
+//   - All downstream systems can handle NaN/Infinity values
+func (dec *Decoder) AllowNaNInfinity() { dec.d.allowNaNInf = true }
 
 // Decode reads the next BONJSON-encoded value from its
 // input and stores it in the value pointed to by v.
