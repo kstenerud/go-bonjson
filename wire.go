@@ -361,6 +361,12 @@ func decodeLongString(src []byte, maxChunks int, maxLength int64) ([]byte, int, 
 	chunkCount := 0
 
 	for {
+		// Safety check: reject zero-length chunks with continuation bit set.
+		// This is byte 0x03 (length=0, continuation=1) and serves no valid purpose.
+		if len(src) > offset && src[offset] == 0x03 {
+			return nil, 0, &EmptyChunkContinuationError{Offset: int64(offset)}
+		}
+
 		length, continuation, n, err := decodeLengthField(src[offset:])
 		if err != nil {
 			return nil, 0, err

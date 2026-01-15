@@ -182,18 +182,55 @@ func TestNULCharacterAllowed(t *testing.T) {
 // Security Rule: Reject chunking (by default)
 // ============================================================================
 
+func TestEmptyChunkWithContinuationRejected(t *testing.T) {
+	// A zero-length chunk with continuation=1 is invalid (byte 0x03).
+	// This serves no valid purpose and could be used for DoS attacks.
+	var buf bytes.Buffer
+	buf.WriteByte(typeLongString)
+	buf.WriteByte(0x03) // length=0, continuation=1 (invalid)
+
+	var v string
+	err := Unmarshal(buf.Bytes(), &v)
+	if err == nil {
+		t.Error("expected error for empty chunk with continuation bit set")
+	}
+
+	var emptyChunkErr *EmptyChunkContinuationError
+	if !errors.As(err, &emptyChunkErr) {
+		t.Errorf("expected EmptyChunkContinuationError, got %T: %v", err, err)
+	}
+}
+
+func TestEmptyChunkWithoutContinuationAccepted(t *testing.T) {
+	// A zero-length chunk with continuation=0 is valid (byte 0x01).
+	// This represents an empty string using long string encoding.
+	var buf bytes.Buffer
+	buf.WriteByte(typeLongString)
+	buf.WriteByte(0x01) // length=0, continuation=0 (valid empty string)
+
+	var v string
+	err := Unmarshal(buf.Bytes(), &v)
+	if err != nil {
+		t.Errorf("empty chunk without continuation should be valid: %v", err)
+	}
+	if v != "" {
+		t.Errorf("expected empty string, got %q", v)
+	}
+}
+
 func TestChunkingLimitDefault(t *testing.T) {
 	// Create a string with more than 100 chunks (default limit)
 	var buf bytes.Buffer
 	buf.WriteByte(typeLongString)
 
 	// Create 101 chunks to exceed the default limit of 100
+	// Length field encoding: 0x07 = length 1 with continuation, 0x05 = length 1 without
 	for i := 0; i < 101; i++ {
 		continuation := i < 100 // continuation bit for all but last
 		if continuation {
-			buf.WriteByte(0x03) // length 1, continuation bit set
+			buf.WriteByte(0x07) // length=1, continuation=1
 		} else {
-			buf.WriteByte(0x02) // length 1, no continuation
+			buf.WriteByte(0x05) // length=1, continuation=0
 		}
 		buf.WriteByte('x')
 	}

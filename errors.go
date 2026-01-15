@@ -153,6 +153,17 @@ func (e *TooManyChunksError) Error() string {
 	return fmt.Sprintf("bonjson: string has %d chunks, max allowed is %d at offset %d", e.Count, e.Max, e.Offset)
 }
 
+// EmptyChunkContinuationError is returned when a zero-length chunk has the
+// continuation bit set. This is invalid because empty chunks with continuation
+// serve no purpose and could be used for DoS attacks.
+type EmptyChunkContinuationError struct {
+	Offset int64
+}
+
+func (e *EmptyChunkContinuationError) Error() string {
+	return fmt.Sprintf("bonjson: empty chunk with continuation bit set at offset %d", e.Offset)
+}
+
 // ValueRangeError is returned when a numeric value is out of range.
 type ValueRangeError struct {
 	Value  string

@@ -190,6 +190,7 @@ For typical structs (<20 fields), linear search beats hash map lookup. The field
 - Reject invalid UTF-8 in strings
 - Reject NUL characters in strings
 - Reject NaN and Infinity values
+- Reject empty chunks with continuation bit set (byte 0x03)
 - Enforce depth, string length, and chunk limits
 
 ### Configurable Relaxations
