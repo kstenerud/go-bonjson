@@ -288,7 +288,7 @@ func (dec *Decoder) readLengthField() (length uint64, continuation bool, err err
 	}
 	dec.buf = append(dec.buf, header)
 
-	if header == 0x00 {
+	if header == 0xff {
 		// 9-byte encoding
 		if err := dec.readBytes(8); err != nil {
 			return 0, false, err
@@ -299,8 +299,8 @@ func (dec *Decoder) readLengthField() (length uint64, continuation bool, err err
 		return payload >> 1, (payload & 1) != 0, nil
 	}
 
-	// Count trailing zeros + 1 gives us the byte count
-	count := bits.TrailingZeros8(header) + 1
+	// Invert header, then count trailing zeros + 1 gives us the byte count
+	count := bits.TrailingZeros8(^header) + 1
 
 	// Read remaining bytes
 	if count > 1 {

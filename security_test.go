@@ -120,8 +120,7 @@ func TestInvalidUTF8Rejection(t *testing.T) {
 			buf.WriteByte(typeLongString)
 			// Length field (non-continuation)
 			length := uint64(len(tt.content))
-			encodeLengthField(buf.AvailableBuffer()[:16], length, false)
-			buf.WriteByte(byte((length << 1) | 0x01)) // simple length encoding
+			buf.WriteByte(byte(length << 2)) // simple 1-byte length encoding
 			buf.Write(tt.content)
 
 			var v string
@@ -183,11 +182,11 @@ func TestNULCharacterAllowed(t *testing.T) {
 // ============================================================================
 
 func TestEmptyChunkWithContinuationRejected(t *testing.T) {
-	// A zero-length chunk with continuation=1 is invalid (byte 0x03).
+	// A zero-length chunk with continuation=1 is invalid (byte 0x02).
 	// This serves no valid purpose and could be used for DoS attacks.
 	var buf bytes.Buffer
 	buf.WriteByte(typeLongString)
-	buf.WriteByte(0x03) // length=0, continuation=1 (invalid)
+	buf.WriteByte(0x02) // length=0, continuation=1 (invalid)
 
 	var v string
 	err := Unmarshal(buf.Bytes(), &v)
@@ -202,11 +201,11 @@ func TestEmptyChunkWithContinuationRejected(t *testing.T) {
 }
 
 func TestEmptyChunkWithoutContinuationAccepted(t *testing.T) {
-	// A zero-length chunk with continuation=0 is valid (byte 0x01).
+	// A zero-length chunk with continuation=0 is valid (byte 0x00).
 	// This represents an empty string using long string encoding.
 	var buf bytes.Buffer
 	buf.WriteByte(typeLongString)
-	buf.WriteByte(0x01) // length=0, continuation=0 (valid empty string)
+	buf.WriteByte(0x00) // length=0, continuation=0 (valid empty string)
 
 	var v string
 	err := Unmarshal(buf.Bytes(), &v)
@@ -224,13 +223,13 @@ func TestChunkingLimitDefault(t *testing.T) {
 	buf.WriteByte(typeLongString)
 
 	// Create 101 chunks to exceed the default limit of 100
-	// Length field encoding: 0x07 = length 1 with continuation, 0x05 = length 1 without
+	// Length field encoding: 0x06 = length 1 with continuation, 0x04 = length 1 without
 	for i := 0; i < 101; i++ {
 		continuation := i < 100 // continuation bit for all but last
 		if continuation {
-			buf.WriteByte(0x07) // length=1, continuation=1
+			buf.WriteByte(0x06) // length=1, continuation=1
 		} else {
-			buf.WriteByte(0x05) // length=1, continuation=0
+			buf.WriteByte(0x04) // length=1, continuation=0
 		}
 		buf.WriteByte('x')
 	}

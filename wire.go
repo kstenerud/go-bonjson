@@ -89,11 +89,13 @@ func encodeLengthField(dst []byte, length uint64, continuation bool) int {
 
 // encodeLengthPayload encodes a length field payload into dst.
 // Returns the number of bytes written.
+// The length field uses trailing 1s terminated by a 0 bit, allowing length 0
+// with continuation 0 to encode as byte 0x00 (enabling zero-copy NUL-termination).
 func encodeLengthPayload(dst []byte, payload uint64) int {
 	// Fast path for small payloads (very common case)
 	// Payload fits in 7 bits -> 1 byte encoding
 	if payload <= 0x7f {
-		dst[0] = byte((payload << 1) | 1)
+		dst[0] = byte(payload << 1)
 		return 1
 	}
 
@@ -103,10 +105,10 @@ func encodeLengthPayload(dst []byte, payload uint64) int {
 	extraBytes := (sigBits - 1) / 7
 
 	if extraBytes < 8 {
-		// Encode: shift payload left by (extraBytes+1), then set the marker bit
-		// This is: (payload << (count)) | (1 << (count-1)) where count = extraBytes+1
+		// Encode: shift payload left by (extraBytes+1), then set trailing 1 bits
+		// The terminating 0 bit is already in place from the shift
 		count := extraBytes + 1
-		encoded := (payload << count) | (1 << extraBytes)
+		encoded := (payload << count) | ((1 << extraBytes) - 1)
 
 		// Write as little-endian
 		// Use binary.LittleEndian.PutUint64 for efficiency - the compiler
@@ -115,8 +117,8 @@ func encodeLengthPayload(dst []byte, payload uint64) int {
 		return count
 	}
 
-	// 9-byte encoding (header byte 0x00)
-	dst[0] = 0x00
+	// 9-byte encoding (header byte 0xff)
+	dst[0] = 0xff
 	binary.LittleEndian.PutUint64(dst[1:], payload)
 	return 9
 }
@@ -135,13 +137,14 @@ func decodeLengthField(src []byte) (length uint64, continuation bool, n int, err
 
 // decodeLengthPayload decodes a length field payload from src.
 // Returns the payload value, bytes consumed, and any error.
+// The length field uses trailing 1s terminated by a 0 bit.
 func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 	if len(src) == 0 {
 		return 0, 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: 0}
 	}
 
 	header := src[0]
-	if header == 0x00 {
+	if header == 0xff {
 		// 9-byte encoding
 		if len(src) < 9 {
 			return 0, 0, &TruncatedDataError{Expected: 9, Got: len(src), Offset: 0}
@@ -150,9 +153,9 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 		return payload, 9, nil
 	}
 
-	// Count trailing zeros + 1 gives us the byte count
+	// Invert header, then count trailing zeros + 1 gives us the byte count
 	// bits.TrailingZeros8 compiles to a single CPU instruction on most architectures
-	count := bits.TrailingZeros8(header) + 1
+	count := bits.TrailingZeros8(^header) + 1
 	if len(src) < count {
 		return 0, 0, &TruncatedDataError{Expected: count, Got: len(src), Offset: 0}
 	}
@@ -362,8 +365,8 @@ func decodeLongString(src []byte, maxChunks int, maxLength int64) ([]byte, int, 
 
 	for {
 		// Safety check: reject zero-length chunks with continuation bit set.
-		// This is byte 0x03 (length=0, continuation=1) and serves no valid purpose.
-		if len(src) > offset && src[offset] == 0x03 {
+		// This is byte 0x02 (length=0, continuation=1) and serves no valid purpose.
+		if len(src) > offset && src[offset] == 0x02 {
 			return nil, 0, &EmptyChunkContinuationError{Offset: int64(offset)}
 		}
 

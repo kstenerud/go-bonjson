@@ -40,15 +40,15 @@ func TestEncodeLengthField(t *testing.T) {
 		continuation bool
 		want         []byte
 	}{
-		{"zero no-cont", 0, false, []byte{0x01}},
-		{"zero cont", 0, true, []byte{0x03}},
-		{"1 no-cont", 1, false, []byte{0x05}},
-		{"1 cont", 1, true, []byte{0x07}},
-		{"63 no-cont", 63, false, []byte{0xfd}},
-		{"64 no-cont", 64, false, []byte{0x02, 0x02}},
-		{"127 no-cont", 127, false, []byte{0x02, 0x04}},
-		{"128 no-cont", 128, false, []byte{0x02, 0x04}},
-		{"large value", 0x123456, false, []byte{0x58, 0x68, 0x91, 0x04}},
+		{"zero no-cont", 0, false, []byte{0x00}},
+		{"zero cont", 0, true, []byte{0x02}},
+		{"1 no-cont", 1, false, []byte{0x04}},
+		{"1 cont", 1, true, []byte{0x06}},
+		{"63 no-cont", 63, false, []byte{0xfc}},
+		{"64 no-cont", 64, false, []byte{0x01, 0x02}},
+		{"127 no-cont", 127, false, []byte{0xf9, 0x03}},
+		{"128 no-cont", 128, false, []byte{0x01, 0x04}},
+		{"large value", 0x123456, false, []byte{0x59, 0x68, 0x91, 0x04}},
 	}
 
 	for _, tt := range tests {
@@ -78,8 +78,8 @@ func TestDecodeLengthFieldErrors(t *testing.T) {
 		data []byte
 	}{
 		{"empty", []byte{}},
-		{"truncated multi-byte", []byte{0x02}},
-		{"truncated 9-byte", []byte{0x00, 0x01, 0x02}},
+		{"truncated multi-byte", []byte{0x01}},
+		{"truncated 9-byte", []byte{0xff, 0x01, 0x02}},
 	}
 
 	for _, tt := range tests {
