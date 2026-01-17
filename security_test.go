@@ -20,145 +20,22 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
-//
+
+// ABOUTME: Tests for Go-specific security configuration options and modes.
+// ABOUTME: Default security behavior is covered by universal spec tests.
 
 package bonjson
 
 import (
 	"bytes"
-	"errors"
 	"math"
 	"strings"
 	"testing"
 )
 
 // ============================================================================
-// BONJSON Security Rules Tests
-// These tests verify compliance with BONJSON security requirements
+// NUL Character Configuration Tests
 // ============================================================================
-
-// ============================================================================
-// Duplicate Key Detection Tests
-// Security Rule: Reject documents with duplicate object keys
-// ============================================================================
-
-func TestDuplicateKeyRejection(t *testing.T) {
-	// Manually construct BONJSON with duplicate keys
-	// Object: {"a": 1, "a": 2}
-	var buf bytes.Buffer
-	buf.WriteByte(typeObjectStart)
-	// First key "a"
-	buf.WriteByte(typeShortStringBase + 1)
-	buf.WriteByte('a')
-	// Value 1
-	buf.WriteByte(0x01)
-	// Second key "a" (duplicate)
-	buf.WriteByte(typeShortStringBase + 1)
-	buf.WriteByte('a')
-	// Value 2
-	buf.WriteByte(0x02)
-	buf.WriteByte(typeContainerEnd)
-
-	var v map[string]int
-	err := Unmarshal(buf.Bytes(), &v)
-	if err == nil {
-		t.Error("expected error for duplicate key")
-	}
-
-	var dupErr *DuplicateKeyError
-	if !errors.As(err, &dupErr) {
-		t.Errorf("expected DuplicateKeyError, got %T: %v", err, err)
-	}
-}
-
-func TestDuplicateKeyExact(t *testing.T) {
-	// Test that exact duplicate keys are detected
-
-	var buf bytes.Buffer
-	buf.WriteByte(typeObjectStart)
-	// Key "ABC"
-	buf.WriteByte(typeShortStringBase + 3)
-	buf.Write([]byte("ABC"))
-	buf.WriteByte(0x01)
-	// Key "ABC" again (exact duplicate)
-	buf.WriteByte(typeShortStringBase + 3)
-	buf.Write([]byte("ABC"))
-	buf.WriteByte(0x02)
-	buf.WriteByte(typeContainerEnd)
-
-	var v map[string]int
-	err := Unmarshal(buf.Bytes(), &v)
-	if err == nil {
-		t.Error("expected error for duplicate normalized key")
-	}
-}
-
-// ============================================================================
-// Invalid UTF-8 Tests
-// Security Rule: Reject strings with invalid UTF-8
-// ============================================================================
-
-func TestInvalidUTF8Rejection(t *testing.T) {
-	tests := []struct {
-		name    string
-		content []byte
-	}{
-		{"invalid_continuation", []byte{0x80}},          // Continuation byte without start
-		{"incomplete_2byte", []byte{0xC0}},              // Incomplete 2-byte sequence
-		{"incomplete_3byte", []byte{0xE0, 0x80}},        // Incomplete 3-byte sequence
-		{"incomplete_4byte", []byte{0xF0, 0x80, 0x80}},  // Incomplete 4-byte sequence
-		{"overlong_2byte", []byte{0xC0, 0x80}},          // Overlong encoding of NUL
-		{"overlong_3byte", []byte{0xE0, 0x80, 0x80}},    // Overlong
-		{"invalid_surrogate", []byte{0xED, 0xA0, 0x80}}, // UTF-16 surrogate
-		{"above_max", []byte{0xF4, 0x90, 0x80, 0x80}},   // Above U+10FFFF
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create a string with invalid UTF-8
-			var buf bytes.Buffer
-			buf.WriteByte(typeLongString)
-			// Length field (non-continuation)
-			length := uint64(len(tt.content))
-			buf.WriteByte(byte(length << 2)) // simple 1-byte length encoding
-			buf.Write(tt.content)
-
-			var v string
-			err := Unmarshal(buf.Bytes(), &v)
-			if err == nil {
-				t.Error("expected error for invalid UTF-8")
-			}
-			var utf8Err *InvalidUTF8Error
-			if !errors.As(err, &utf8Err) {
-				// May be a different error type depending on implementation
-				t.Logf("got error: %T: %v", err, err)
-			}
-		})
-	}
-}
-
-// ============================================================================
-// NUL Character Tests
-// Security Rule: Reject strings with NUL characters (by default)
-// ============================================================================
-
-func TestNULCharacterRejectionDefault(t *testing.T) {
-	// String containing NUL
-	var buf bytes.Buffer
-	buf.WriteByte(typeShortStringBase + 3)
-	buf.Write([]byte{'a', 0x00, 'b'})
-
-	var v string
-	err := Unmarshal(buf.Bytes(), &v)
-	if err == nil {
-		t.Error("expected error for NUL character in string (default)")
-	}
-
-	var nulErr *NullInStringError
-	if !errors.As(err, &nulErr) {
-		t.Logf("got error: %T: %v", err, err)
-	}
-}
 
 func TestNULCharacterAllowed(t *testing.T) {
 	// String containing NUL
@@ -177,149 +54,8 @@ func TestNULCharacterAllowed(t *testing.T) {
 }
 
 // ============================================================================
-// Chunking Tests
-// Security Rule: Reject chunking (by default)
+// Max Depth Configuration Tests
 // ============================================================================
-
-func TestEmptyChunkWithContinuationRejected(t *testing.T) {
-	// A zero-length chunk with continuation=1 is invalid (byte 0x02).
-	// This serves no valid purpose and could be used for DoS attacks.
-	var buf bytes.Buffer
-	buf.WriteByte(typeLongString)
-	buf.WriteByte(0x02) // length=0, continuation=1 (invalid)
-
-	var v string
-	err := Unmarshal(buf.Bytes(), &v)
-	if err == nil {
-		t.Error("expected error for empty chunk with continuation bit set")
-	}
-
-	var emptyChunkErr *EmptyChunkContinuationError
-	if !errors.As(err, &emptyChunkErr) {
-		t.Errorf("expected EmptyChunkContinuationError, got %T: %v", err, err)
-	}
-}
-
-func TestEmptyChunkWithoutContinuationAccepted(t *testing.T) {
-	// A zero-length chunk with continuation=0 is valid (byte 0x00).
-	// This represents an empty string using long string encoding.
-	var buf bytes.Buffer
-	buf.WriteByte(typeLongString)
-	buf.WriteByte(0x00) // length=0, continuation=0 (valid empty string)
-
-	var v string
-	err := Unmarshal(buf.Bytes(), &v)
-	if err != nil {
-		t.Errorf("empty chunk without continuation should be valid: %v", err)
-	}
-	if v != "" {
-		t.Errorf("expected empty string, got %q", v)
-	}
-}
-
-func TestChunkingLimitDefault(t *testing.T) {
-	// Create a string with more than 100 chunks (default limit)
-	var buf bytes.Buffer
-	buf.WriteByte(typeLongString)
-
-	// Create 101 chunks to exceed the default limit of 100
-	// Length field encoding: 0x06 = length 1 with continuation, 0x04 = length 1 without
-	for i := 0; i < 101; i++ {
-		continuation := i < 100 // continuation bit for all but last
-		if continuation {
-			buf.WriteByte(0x06) // length=1, continuation=1
-		} else {
-			buf.WriteByte(0x04) // length=1, continuation=0
-		}
-		buf.WriteByte('x')
-	}
-
-	var v string
-	err := Unmarshal(buf.Bytes(), &v)
-	if err == nil {
-		t.Error("expected error for string with too many chunks")
-	}
-
-	var chunkErr *TooManyChunksError
-	if !errors.As(err, &chunkErr) {
-		t.Logf("got error: %T: %v", err, err)
-	}
-}
-
-func TestSetMaxChunksMethod(t *testing.T) {
-	// Verify SetMaxChunks method exists and can be called
-	dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
-	dec.SetMaxChunks(1000)
-
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		t.Errorf("Decode after SetMaxChunks error: %v", err)
-	}
-}
-
-// ============================================================================
-// NaN/Infinity Tests
-// Security Rule: Reject NaN and Infinity values
-// ============================================================================
-
-func TestBigNumberSpecialValuesRejectionOnDecode(t *testing.T) {
-	// Big number special values (NaN, Infinity) should be rejected
-	tests := []struct {
-		name    string
-		special byte
-	}{
-		{"quiet_nan", bigNumNaNQuiet},
-		{"signaling_nan", bigNumNaNSignaling},
-		{"positive_infinity", bigNumInfinity},
-		{"negative_infinity", bigNumInfinity | bigNumNegative},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			buf.WriteByte(typeBigNumber)
-			// Significand length = 0 indicates special value
-			buf.WriteByte(0x01) // length field = 0 (payload = 0)
-			buf.WriteByte(tt.special)
-
-			var v float64
-			err := Unmarshal(buf.Bytes(), &v)
-			if err == nil {
-				t.Error("expected error for NaN/Infinity")
-			}
-		})
-	}
-}
-
-// ============================================================================
-// Max Depth Tests
-// Security Rule: Limit container nesting depth
-// ============================================================================
-
-func TestMaxDepthExceeded(t *testing.T) {
-	// Create deeply nested arrays
-	var buf bytes.Buffer
-	depth := 2000 // Exceeds default max depth
-
-	for i := 0; i < depth; i++ {
-		buf.WriteByte(typeArrayStart)
-	}
-	buf.WriteByte(typeNull) // Innermost value
-	for i := 0; i < depth; i++ {
-		buf.WriteByte(typeContainerEnd)
-	}
-
-	var v any
-	err := Unmarshal(buf.Bytes(), &v)
-	if err == nil {
-		t.Error("expected error for exceeding max depth")
-	}
-
-	var depthErr *MaxDepthError
-	if !errors.As(err, &depthErr) {
-		t.Logf("got error: %T: %v", err, err)
-	}
-}
 
 func TestMaxDepthConfigurable(t *testing.T) {
 	// Create moderately nested arrays
@@ -352,7 +88,7 @@ func TestMaxDepthConfigurable(t *testing.T) {
 }
 
 // ============================================================================
-// Max String Length Tests
+// Max String Length Configuration Tests
 // ============================================================================
 
 func TestMaxStringLengthExceeded(t *testing.T) {
@@ -371,193 +107,17 @@ func TestMaxStringLengthExceeded(t *testing.T) {
 }
 
 // ============================================================================
-// Valid Document Tests
+// Max Chunks Configuration Tests
 // ============================================================================
 
-func TestValidSecureDocuments(t *testing.T) {
-	tests := []struct {
-		name  string
-		value any
-	}{
-		{"simple_object", map[string]int{"a": 1, "b": 2}},
-		{"nested_object", map[string]any{"outer": map[string]int{"inner": 42}}},
-		{"unicode_keys", map[string]int{"日本語": 1, "한국어": 2}},
-		{"unicode_values", map[string]string{"key": "日本語テスト"}},
-		{"deep_nesting", createNestedArray(100)},
-	}
+func TestSetMaxChunksMethod(t *testing.T) {
+	// Verify SetMaxChunks method exists and can be called
+	dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
+	dec.SetMaxChunks(1000)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			data, err := Marshal(tt.value)
-			if err != nil {
-				t.Fatalf("Marshal error: %v", err)
-			}
-
-			if !Valid(data) {
-				t.Error("Valid returned false for valid document")
-			}
-
-			var v any
-			if err := Unmarshal(data, &v); err != nil {
-				t.Errorf("Unmarshal error: %v", err)
-			}
-		})
-	}
-}
-
-func createNestedArray(depth int) any {
-	var v any = "leaf"
-	for i := 0; i < depth; i++ {
-		v = []any{v}
-	}
-	return v
-}
-
-// ============================================================================
-// Object Key Order Tests
-// ============================================================================
-
-func TestObjectKeyOrder(t *testing.T) {
-	// Marshal and unmarshal should preserve key order (within a single encode/decode)
-	// Note: Go maps don't preserve order, but the encoding should be deterministic
-
-	original := map[string]int{
-		"z": 1,
-		"a": 2,
-		"m": 3,
-	}
-
-	data1, _ := Marshal(original)
-	data2, _ := Marshal(original)
-
-	// Multiple encodes should produce identical output
-	if !bytes.Equal(data1, data2) {
-		t.Error("encoding should be deterministic")
-	}
-}
-
-// ============================================================================
-// Edge Case Security Tests
-// ============================================================================
-
-func TestEmptyObject(t *testing.T) {
-	data, err := Marshal(map[string]any{})
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-
-	var v map[string]any
-	if err := Unmarshal(data, &v); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-
-	if len(v) != 0 {
-		t.Errorf("expected empty map, got %v", v)
-	}
-}
-
-func TestEmptyArray(t *testing.T) {
-	data, err := Marshal([]any{})
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-
-	var v []any
-	if err := Unmarshal(data, &v); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-
-	if len(v) != 0 {
-		t.Errorf("expected empty slice, got %v", v)
-	}
-}
-
-func TestEmptyString(t *testing.T) {
-	data, err := Marshal("")
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-
-	var v string
-	if err := Unmarshal(data, &v); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-
-	if v != "" {
-		t.Errorf("expected empty string, got %q", v)
-	}
-}
-
-// ============================================================================
-// Boundary Value Tests
-// ============================================================================
-
-func TestSmallIntBoundaries(t *testing.T) {
-	// Test exact boundaries of small integer encoding
-	tests := []int64{
-		-101, -100, -99, // Around negative boundary
-		-1, 0, 1, // Around zero
-		99, 100, 101, // Around positive boundary
-	}
-
-	for _, v := range tests {
-		data, err := Marshal(v)
-		if err != nil {
-			t.Errorf("Marshal(%d) error: %v", v, err)
-			continue
-		}
-
-		var got int64
-		if err := Unmarshal(data, &got); err != nil {
-			t.Errorf("Unmarshal error for %d: %v", v, err)
-			continue
-		}
-
-		if got != v {
-			t.Errorf("roundtrip %d -> %d", v, got)
-		}
-
-		// Verify encoding size
-		expectedSize := 1
-		if v < -100 || v > 100 {
-			expectedSize = 2 // type code + 1 byte value
-		}
-		if len(data) != expectedSize {
-			t.Errorf("Marshal(%d) size = %d, expected %d", v, len(data), expectedSize)
-		}
-	}
-}
-
-func TestShortStringBoundaries(t *testing.T) {
-	// Test exact boundaries of short string encoding
-	tests := []int{0, 1, 14, 15, 16, 17}
-
-	for _, length := range tests {
-		s := strings.Repeat("x", length)
-		data, err := Marshal(s)
-		if err != nil {
-			t.Errorf("Marshal(len=%d) error: %v", length, err)
-			continue
-		}
-
-		var got string
-		if err := Unmarshal(data, &got); err != nil {
-			t.Errorf("Unmarshal error for len=%d: %v", length, err)
-			continue
-		}
-
-		if got != s {
-			t.Errorf("roundtrip mismatch for len=%d", length)
-		}
-
-		// Short strings (0-15) should be 1 + length bytes
-		// Long strings (16+) should be 1 + length_field + length bytes
-		if length <= 15 {
-			expectedSize := 1 + length
-			if len(data) != expectedSize {
-				t.Errorf("short string len=%d encoded as %d bytes, expected %d", length, len(data), expectedSize)
-			}
-		}
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		t.Errorf("Decode after SetMaxChunks error: %v", err)
 	}
 }
 
@@ -634,25 +194,6 @@ func TestInvalidUTF8ModeIgnore(t *testing.T) {
 	expected := "hello\xffworld"
 	if v != expected {
 		t.Errorf("got %q, expected %q", v, expected)
-	}
-}
-
-func TestInvalidUTF8ModeRejectDefault(t *testing.T) {
-	// Create string with invalid UTF-8
-	var buf bytes.Buffer
-	buf.WriteByte(typeShortStringBase + 6)
-	buf.Write([]byte("hello"))
-	buf.WriteByte(0xff) // invalid UTF-8 byte
-
-	var v string
-	err := Unmarshal(buf.Bytes(), &v)
-	if err == nil {
-		t.Error("expected error for invalid UTF-8 with default mode")
-	}
-
-	var utf8Err *InvalidUTF8Error
-	if !errors.As(err, &utf8Err) {
-		t.Errorf("expected InvalidUTF8Error, got %T: %v", err, err)
 	}
 }
 
@@ -757,30 +298,6 @@ func TestDuplicateKeyModeReplace(t *testing.T) {
 	}
 }
 
-func TestDuplicateKeyModeRejectDefault(t *testing.T) {
-	// Object: {"a": 1, "a": 2}
-	var buf bytes.Buffer
-	buf.WriteByte(typeObjectStart)
-	buf.WriteByte(typeShortStringBase + 1)
-	buf.WriteByte('a')
-	buf.WriteByte(0x01)
-	buf.WriteByte(typeShortStringBase + 1)
-	buf.WriteByte('a')
-	buf.WriteByte(0x02)
-	buf.WriteByte(typeContainerEnd)
-
-	var v map[string]int
-	err := Unmarshal(buf.Bytes(), &v)
-	if err == nil {
-		t.Error("expected error for duplicate key with default mode")
-	}
-
-	var dupErr *DuplicateKeyError
-	if !errors.As(err, &dupErr) {
-		t.Errorf("expected DuplicateKeyError, got %T: %v", err, err)
-	}
-}
-
 func TestDuplicateKeyModeWithStruct(t *testing.T) {
 	type TestStruct struct {
 		A int `json:"a"`
@@ -866,7 +383,7 @@ func TestDuplicateKeyModeWithInterface(t *testing.T) {
 }
 
 // ============================================================================
-// NaN/Infinity Allow Tests
+// NaN/Infinity Handling Mode Tests
 // ============================================================================
 
 func TestNaNInfinityAllow(t *testing.T) {
@@ -916,39 +433,6 @@ func TestNaNInfinityAllow(t *testing.T) {
 	}
 }
 
-func TestNaNInfinityRejectedByDefault(t *testing.T) {
-	tests := []struct {
-		name    string
-		special byte
-	}{
-		{"quiet_nan", bigNumNaNQuiet},
-		{"positive_infinity", bigNumInfinity},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			buf.WriteByte(typeBigNumber)
-			buf.WriteByte(tt.special)
-
-			var v float64
-			err := Unmarshal(buf.Bytes(), &v)
-			if err == nil {
-				t.Error("expected error for NaN/Infinity with default mode")
-			}
-
-			var valErr *InvalidValueError
-			if !errors.As(err, &valErr) {
-				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
-			}
-		})
-	}
-}
-
-// ============================================================================
-// NaN/Infinity Stringify Mode Tests
-// ============================================================================
-
 func TestNaNInfinityStringifyDecode(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -984,26 +468,6 @@ func TestNaNInfinityStringifyDecode(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, s)
 			}
 		})
-	}
-}
-
-func TestNaNInfinityStringifyDecodeToFloat64Fails(t *testing.T) {
-	// When stringify mode is enabled and decoding into float64,
-	// it should fail because we're trying to store a string into a float64
-	var buf bytes.Buffer
-	buf.WriteByte(typeBigNumber)
-	buf.WriteByte(bigNumNaNQuiet)
-
-	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
-	dec.SetNaNInfinityMode(NaNInfStringify)
-
-	var v float64
-	err := dec.Decode(&v)
-	// This stores a string "NaN" which will cause a type mismatch error
-	// when stored to float64 via storeString -> storeFloat path
-	if err == nil {
-		// If it didn't error, v should still be 0 and there should be a saved error
-		t.Logf("decoded to float64: %v", v)
 	}
 }
 
@@ -1130,112 +594,6 @@ func TestNaNInfinityStringifyEncode(t *testing.T) {
 	}
 }
 
-func TestNaNInfinityModeSetterOnDecoder(t *testing.T) {
-	// Verify SetNaNInfinityMode works correctly
-	dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
-
-	// Default should be reject
-	var v any
-	dec.Decode(&v)
-
-	// Create new decoder and set to stringify
-	var buf bytes.Buffer
-	buf.WriteByte(typeBigNumber)
-	buf.WriteByte(bigNumNaNQuiet)
-
-	dec = NewDecoder(bytes.NewReader(buf.Bytes()))
-	dec.SetNaNInfinityMode(NaNInfStringify)
-
-	err := dec.Decode(&v)
-	if err != nil {
-		t.Fatalf("NaNInfStringify should not error: %v", err)
-	}
-	if v != "NaN" {
-		t.Errorf("expected \"NaN\", got %v", v)
-	}
-}
-
-func TestNaNInfinityModeSetterOnEncoder(t *testing.T) {
-	// Verify SetNaNInfinityMode works correctly on encoder
-	var buf bytes.Buffer
-	enc := NewEncoder(&buf)
-	enc.SetNaNInfinityMode(NaNInfStringify)
-
-	err := enc.Encode(math.NaN())
-	if err != nil {
-		t.Fatalf("NaNInfStringify encode should not error: %v", err)
-	}
-
-	// Verify it encoded as a string
-	var v string
-	if err := Unmarshal(buf.Bytes(), &v); err != nil {
-		t.Fatalf("failed to decode: %v", err)
-	}
-	if v != "NaN" {
-		t.Errorf("expected \"NaN\", got %q", v)
-	}
-}
-
-// ============================================================================
-// Encoder NaN/Infinity Rejection Tests (Default Behavior)
-// ============================================================================
-
-func TestNaNInfinityEncodeRejectDefault(t *testing.T) {
-	// By default, Marshal should reject NaN and Infinity values
-	tests := []struct {
-		name  string
-		value float64
-	}{
-		{"nan", math.NaN()},
-		{"positive_infinity", math.Inf(1)},
-		{"negative_infinity", math.Inf(-1)},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Marshal(tt.value)
-			if err == nil {
-				t.Error("expected error when encoding NaN/Infinity with default settings")
-			}
-
-			var unsupErr *UnsupportedValueError
-			if !errors.As(err, &unsupErr) {
-				t.Errorf("expected UnsupportedValueError, got %T: %v", err, err)
-			}
-		})
-	}
-}
-
-func TestNaNInfinityEncodeRejectFloat32(t *testing.T) {
-	// Test that float32 NaN/Infinity is also rejected by default
-	tests := []struct {
-		name  string
-		value float32
-	}{
-		{"nan", float32(math.NaN())},
-		{"positive_infinity", float32(math.Inf(1))},
-		{"negative_infinity", float32(math.Inf(-1))},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Marshal(tt.value)
-			if err == nil {
-				t.Error("expected error when encoding float32 NaN/Infinity with default settings")
-			}
-
-			var unsupErr *UnsupportedValueError
-			if !errors.As(err, &unsupErr) {
-				t.Errorf("expected UnsupportedValueError, got %T: %v", err, err)
-			}
-		})
-	}
-}
-
-// ============================================================================
-// Encoder NaN/Infinity Allow Mode Tests
-// ============================================================================
-
 func TestNaNInfinityEncodeAllow(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1281,102 +639,6 @@ func TestNaNInfinityEncodeAllow(t *testing.T) {
 		})
 	}
 }
-
-// ============================================================================
-// Decoder Float16/32/64 NaN/Infinity Rejection Tests (Default Behavior)
-// ============================================================================
-
-func TestNaNInfinityDecodeFloat16RejectDefault(t *testing.T) {
-	tests := []struct {
-		name   string
-		data   []byte
-		errStr string
-	}{
-		// bfloat16 NaN: 0x7FC0 (quiet NaN)
-		{"nan", []byte{typeFloat16, 0xC0, 0x7F}, "NaN"},
-		// bfloat16 +Inf: 0x7F80
-		{"positive_infinity", []byte{typeFloat16, 0x80, 0x7F}, "Infinity"},
-		// bfloat16 -Inf: 0xFF80
-		{"negative_infinity", []byte{typeFloat16, 0x80, 0xFF}, "Infinity"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var v float64
-			err := Unmarshal(tt.data, &v)
-			if err == nil {
-				t.Error("expected error for float16 NaN/Infinity with default mode")
-			}
-
-			var valErr *InvalidValueError
-			if !errors.As(err, &valErr) {
-				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
-			}
-		})
-	}
-}
-
-func TestNaNInfinityDecodeFloat32RejectDefault(t *testing.T) {
-	tests := []struct {
-		name string
-		data []byte
-	}{
-		// float32 NaN: 0x7FC00000
-		{"nan", []byte{typeFloat32, 0x00, 0x00, 0xC0, 0x7F}},
-		// float32 +Inf: 0x7F800000
-		{"positive_infinity", []byte{typeFloat32, 0x00, 0x00, 0x80, 0x7F}},
-		// float32 -Inf: 0xFF800000
-		{"negative_infinity", []byte{typeFloat32, 0x00, 0x00, 0x80, 0xFF}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var v float64
-			err := Unmarshal(tt.data, &v)
-			if err == nil {
-				t.Error("expected error for float32 NaN/Infinity with default mode")
-			}
-
-			var valErr *InvalidValueError
-			if !errors.As(err, &valErr) {
-				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
-			}
-		})
-	}
-}
-
-func TestNaNInfinityDecodeFloat64RejectDefault(t *testing.T) {
-	tests := []struct {
-		name string
-		data []byte
-	}{
-		// float64 NaN: 0x7FF8000000000000
-		{"nan", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x7F}},
-		// float64 +Inf: 0x7FF0000000000000
-		{"positive_infinity", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x7F}},
-		// float64 -Inf: 0xFFF0000000000000
-		{"negative_infinity", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var v float64
-			err := Unmarshal(tt.data, &v)
-			if err == nil {
-				t.Error("expected error for float64 NaN/Infinity with default mode")
-			}
-
-			var valErr *InvalidValueError
-			if !errors.As(err, &valErr) {
-				t.Errorf("expected InvalidValueError, got %T: %v", err, err)
-			}
-		})
-	}
-}
-
-// ============================================================================
-// Decoder Float16/32/64 NaN/Infinity Allow Mode Tests
-// ============================================================================
 
 func TestNaNInfinityDecodeFloat16Allow(t *testing.T) {
 	tests := []struct {

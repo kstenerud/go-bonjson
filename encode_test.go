@@ -595,29 +595,7 @@ func TestMarshalUnsupportedTypes(t *testing.T) {
 	}
 }
 
-func TestMarshalUnsupportedValues(t *testing.T) {
-	tests := []struct {
-		name  string
-		value any
-	}{
-		{"NaN", math.NaN()},
-		{"Inf", math.Inf(1)},
-		{"NegInf", math.Inf(-1)},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Marshal(tt.value)
-			if err == nil {
-				t.Error("expected error for unsupported value")
-			}
-			var uve *UnsupportedValueError
-			if !errors.As(err, &uve) {
-				t.Errorf("expected UnsupportedValueError, got %T", err)
-			}
-		})
-	}
-}
+// NaN/Infinity rejection is tested by universal spec tests (errors.json)
 
 func TestMarshalCycleDetection(t *testing.T) {
 	type Cycle struct {
@@ -992,46 +970,7 @@ func TestValid(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Compact Encoding Tests
-// ============================================================================
-
-func TestCompactEncoding(t *testing.T) {
-	// Small integers should be encoded in 1 byte
-	for i := int64(-100); i <= 100; i++ {
-		data, _ := Marshal(i)
-		if len(data) != 1 {
-			t.Errorf("small int %d encoded as %d bytes, want 1", i, len(data))
-		}
-	}
-
-	// Short strings (0-15 bytes) should have minimal overhead
-	for length := 0; length <= 15; length++ {
-		s := strings.Repeat("x", length)
-		data, _ := Marshal(s)
-		// 1 byte type code + string content
-		if len(data) != 1+length {
-			t.Errorf("short string len=%d encoded as %d bytes, want %d", length, len(data), 1+length)
-		}
-	}
-
-	// Boolean
-	trueData, _ := Marshal(true)
-	if len(trueData) != 1 {
-		t.Errorf("true encoded as %d bytes, want 1", len(trueData))
-	}
-
-	falseData, _ := Marshal(false)
-	if len(falseData) != 1 {
-		t.Errorf("false encoded as %d bytes, want 1", len(falseData))
-	}
-
-	// Null
-	nullData, _ := Marshal(nil)
-	if len(nullData) != 1 {
-		t.Errorf("null encoded as %d bytes, want 1", len(nullData))
-	}
-}
+// Compact encoding sizes are tested by universal spec tests (integers.json, strings.json)
 
 // ============================================================================
 // AppendMarshal Tests

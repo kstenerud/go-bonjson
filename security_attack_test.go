@@ -102,31 +102,7 @@ func TestAttack_IntegerLengthMismatch(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Reserved Type Code Attacks
-// ============================================================================
-
-func TestAttack_ReservedTypeCodes(t *testing.T) {
-	// All reserved type codes should be rejected
-	reserved := []byte{
-		0x65, 0x66, 0x67, // Reserved between small int and string types
-		0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, // Reserved before containers
-	}
-
-	for _, tc := range reserved {
-		t.Run("reserved_0x"+string("0123456789abcdef"[tc>>4])+string("0123456789abcdef"[tc&0xf]), func(t *testing.T) {
-			var v any
-			err := Unmarshal([]byte{tc}, &v)
-			if err == nil {
-				t.Errorf("expected error for reserved type code 0x%02x", tc)
-			}
-			var tcErr *InvalidTypeCodeError
-			if !errors.As(err, &tcErr) {
-				t.Errorf("expected InvalidTypeCodeError, got %T: %v", err, err)
-			}
-		})
-	}
-}
+// Reserved type code rejection is tested by universal spec tests (errors.json)
 
 // ============================================================================
 // Container Termination Attacks
@@ -265,46 +241,7 @@ func TestAttack_DuplicateKeyVariations(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Float Attack Tests
-// ============================================================================
-
-func TestAttack_FloatSpecialValues(t *testing.T) {
-	// Test that NaN and Inf in float16/32/64 are rejected
-	tests := []struct {
-		name string
-		data []byte
-	}{
-		// bfloat16 NaN (0x7fc0 = quiet NaN)
-		{"bfloat16_nan", []byte{typeFloat16, 0xc0, 0x7f}},
-		// bfloat16 +Inf (0x7f80)
-		{"bfloat16_inf", []byte{typeFloat16, 0x80, 0x7f}},
-		// bfloat16 -Inf (0xff80)
-		{"bfloat16_neg_inf", []byte{typeFloat16, 0x80, 0xff}},
-		// float32 NaN
-		{"float32_nan", []byte{typeFloat32, 0x00, 0x00, 0xc0, 0x7f}},
-		// float32 +Inf
-		{"float32_inf", []byte{typeFloat32, 0x00, 0x00, 0x80, 0x7f}},
-		// float32 -Inf
-		{"float32_neg_inf", []byte{typeFloat32, 0x00, 0x00, 0x80, 0xff}},
-		// float64 NaN
-		{"float64_nan", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x7f}},
-		// float64 +Inf
-		{"float64_inf", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x7f}},
-		// float64 -Inf
-		{"float64_neg_inf", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var v float64
-			err := Unmarshal(tt.data, &v)
-			if err == nil {
-				t.Errorf("expected error for special float value, got %v", v)
-			}
-		})
-	}
-}
+// Float NaN/Infinity rejection is tested by universal spec tests (floats.json, errors.json)
 
 // ============================================================================
 // Big Number Attack Tests
@@ -334,32 +271,7 @@ func TestAttack_BigNumberMalformed(t *testing.T) {
 	}
 }
 
-func TestAttack_BigNumberSpecialInvalid(t *testing.T) {
-	// When sig_len=0, exp_len encodes special values
-	// Only exp_len=0 (zero) is valid, others (NaN, Inf) are invalid
-	tests := []struct {
-		name   string
-		header byte
-	}{
-		{"infinity_positive", 0x02},       // sig_len=0, exp_len=1, neg=0
-		{"infinity_negative", 0x03},       // sig_len=0, exp_len=1, neg=1
-		{"nan_quiet_positive", 0x04},      // sig_len=0, exp_len=2, neg=0
-		{"nan_quiet_negative", 0x05},      // sig_len=0, exp_len=2, neg=1
-		{"nan_signaling_positive", 0x06},  // sig_len=0, exp_len=3, neg=0
-		{"nan_signaling_negative", 0x07},  // sig_len=0, exp_len=3, neg=1
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			data := []byte{typeBigNumber, tt.header}
-			var v any
-			err := Unmarshal(data, &v)
-			if err == nil {
-				t.Errorf("expected error for invalid big number special value")
-			}
-		})
-	}
-}
+// BigNumber NaN/Infinity rejection is tested by universal spec tests (errors.json)
 
 // ============================================================================
 // String Attack Tests
@@ -695,54 +607,7 @@ func TestAttack_TypeConfusion(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Boundary Value Tests
-// ============================================================================
-
-func TestAttack_IntegerBoundaries(t *testing.T) {
-	tests := []struct {
-		name string
-		data []byte
-		want int64
-	}{
-		// Small int boundaries
-		{"small_int_max", []byte{0x64}, 100},
-		{"small_int_min", []byte{0x9c}, -100},
-
-		// Just outside small int range
-		{"small_int_max_plus_1", []byte{typeUintBase, 0x65}, 101},
-		{"small_int_min_minus_1", []byte{typeSintBase, 0x9b}, -101},
-
-		// Max/min for various sizes
-		{"int8_max", []byte{typeSintBase, 0x7f}, 127},
-		{"int8_min", []byte{typeSintBase, 0x80}, -128},
-		{"uint8_max", []byte{typeUintBase, 0xff}, 255},
-
-		{"int16_max", []byte{typeSintBase + 1, 0xff, 0x7f}, 32767},
-		{"int16_min", []byte{typeSintBase + 1, 0x00, 0x80}, -32768},
-		{"uint16_max", []byte{typeUintBase + 1, 0xff, 0xff}, 65535},
-
-		{"int32_max", []byte{typeSintBase + 3, 0xff, 0xff, 0xff, 0x7f}, 2147483647},
-		{"int32_min", []byte{typeSintBase + 3, 0x00, 0x00, 0x00, 0x80}, -2147483648},
-
-		{"int64_max", []byte{typeSintBase + 7, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}, 9223372036854775807},
-		{"int64_min", []byte{typeSintBase + 7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80}, -9223372036854775808},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var v int64
-			err := Unmarshal(tt.data, &v)
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
-			if v != tt.want {
-				t.Errorf("got %d, want %d", v, tt.want)
-			}
-		})
-	}
-}
+// Integer boundary tests are covered by universal spec tests (integers.json)
 
 // ============================================================================
 // Concurrent Decoding Safety Tests
