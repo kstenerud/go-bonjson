@@ -223,3 +223,33 @@ type TrailingDataError struct {
 func (e *TrailingDataError) Error() string {
 	return fmt.Sprintf("bonjson: trailing data after value at offset %d", e.Offset)
 }
+
+// NonCanonicalLengthError is returned when a length field uses more bytes than necessary.
+type NonCanonicalLengthError struct {
+	Offset int64
+}
+
+func (e *NonCanonicalLengthError) Error() string {
+	return fmt.Sprintf("bonjson: non-canonical length encoding at offset %d", e.Offset)
+}
+
+// UnclosedContainerError is returned when a container (array or object) is not properly closed.
+type UnclosedContainerError struct {
+	ContainerType string // "array" or "object"
+	Offset        int64
+}
+
+func (e *UnclosedContainerError) Error() string {
+	return fmt.Sprintf("bonjson: unclosed %s starting at offset %d", e.ContainerType, e.Offset)
+}
+
+// MaxStringLengthError is returned when a string exceeds the maximum allowed length.
+type MaxStringLengthError struct {
+	Length int64
+	Max    int64
+	Offset int64
+}
+
+func (e *MaxStringLengthError) Error() string {
+	return fmt.Sprintf("bonjson: string length %d exceeds maximum %d at offset %d", e.Length, e.Max, e.Offset)
+}

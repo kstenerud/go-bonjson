@@ -138,6 +138,7 @@ func decodeLengthField(src []byte) (length uint64, continuation bool, n int, err
 // decodeLengthPayload decodes a length field payload from src.
 // Returns the payload value, bytes consumed, and any error.
 // The length field uses trailing 1s terminated by a 0 bit.
+// Returns NonCanonicalLengthError if the encoding uses more bytes than necessary.
 func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 	if len(src) == 0 {
 		return 0, 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: 0}
@@ -150,6 +151,11 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 			return 0, 0, &TruncatedDataError{Expected: 9, Got: len(src), Offset: 0}
 		}
 		payload = binary.LittleEndian.Uint64(src[1:9])
+		// Check for non-canonical: 9-byte encoding is only needed if payload > max for 8 bytes
+		// Max payload for 8 bytes (count=8) is (1 << 56) - 1
+		if payload <= (1<<56)-1 {
+			return 0, 0, &NonCanonicalLengthError{Offset: 0}
+		}
 		return payload, 9, nil
 	}
 
@@ -161,6 +167,16 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 	}
 
 	payload = readLittleEndianUint64(src, count) >> count
+
+	// Check for non-canonical encoding: payload should require all 'count' bytes
+	// For count > 1, verify payload > max value for (count-1) bytes
+	// Max payload for (count-1) bytes = (1 << (7*(count-1))) - 1
+	if count > 1 {
+		maxForFewerBytes := uint64((1 << (7 * (count - 1))) - 1)
+		if payload <= maxForFewerBytes {
+			return 0, 0, &NonCanonicalLengthError{Offset: 0}
+		}
+	}
 
 	return payload, count, nil
 }
@@ -186,12 +202,13 @@ func encodeSignedInt(dst []byte, v int64) int {
 	effective := u ^ signExtended   // For negative: inverts bits; for positive: same
 
 	// bits.Len64 gives position of highest set bit (1-64), or 0 if value is 0
-	// We need ceiling division by 8, but also need at least 1 byte
+	// We need ceiling division by 8, plus one extra bit for the sign
+	// Using + 8 instead of + 7 ensures we have room for the sign bit
 	var n int
 	if effective == 0 {
 		n = 1
 	} else {
-		n = (bits.Len64(effective) + 7) / 8
+		n = (bits.Len64(effective) + 8) / 8
 	}
 
 	dst[0] = typeSintBase | byte(n-1)
@@ -383,7 +400,7 @@ func decodeLongString(src []byte, maxChunks int, maxLength int64) ([]byte, int, 
 
 		totalLength += int64(length)
 		if maxLength > 0 && totalLength > maxLength {
-			return nil, 0, &SyntaxError{msg: "string exceeds maximum length", Offset: int64(offset)}
+			return nil, 0, &MaxStringLengthError{Length: totalLength, Max: maxLength, Offset: int64(offset)}
 		}
 
 		if offset+int(length) > len(src) {

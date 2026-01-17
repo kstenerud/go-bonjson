@@ -18,6 +18,9 @@ go test              # Run all tests
 go test -v           # Verbose output
 go test -bench .     # Run benchmarks
 go test -cover       # Coverage report
+
+# Cross-implementation test runner
+go run ./cmd/bonjson-test/ testdata/test-config.json
 ```
 
 
@@ -37,6 +40,7 @@ go test -cover       # Coverage report
 | `tags.go` | Struct tag parsing ("bonjson" tag, fallback to "json" tag) |
 | `fold.go` | Case-insensitive field name matching via Unicode SimpleFold |
 | `errors.go` | All error types with byte offset tracking |
+| `cmd/bonjson-test/main.go` | Cross-implementation test runner CLI |
 
 ### Test Files
 
@@ -190,7 +194,7 @@ For typical structs (<20 fields), linear search beats hash map lookup. The field
 - Reject invalid UTF-8 in strings
 - Reject NUL characters in strings
 - Reject NaN and Infinity values
-- Reject empty chunks with continuation bit set (byte 0x03)
+- Reject empty chunks with continuation bit set (byte 0x02)
 - Enforce depth, string length, and chunk limits
 
 ### Configurable Relaxations
@@ -241,6 +245,83 @@ func (t *MyType) UnmarshalBONJSON(data []byte) error {
     // Parse raw BONJSON bytes
 }
 ```
+
+
+## Cross-Implementation Test Runner
+
+The `cmd/bonjson-test` directory contains a test runner for the BONJSON test specification format. This enables running cross-implementation test suites to verify correct encoding/decoding behavior.
+
+### Usage
+
+```bash
+# Run tests from a single test file
+go run ./cmd/bonjson-test/ testdata/sample-tests.json
+
+# Run tests from a configuration file
+go run ./cmd/bonjson-test/ testdata/test-config.json
+
+# Verbose output
+go run ./cmd/bonjson-test/ -v testdata/sample-tests.json
+
+# Run BONJSON spec conformance tests (requires sibling bonjson repo)
+./run-spec-tests.sh           # Run all conformance tests
+./run-spec-tests.sh -v        # Verbose output
+./run-spec-tests.sh -i        # Run each file individually
+./run-spec-tests.sh -h        # Show help
+```
+
+### Supported Test Types
+
+| Type | Description |
+|------|-------------|
+| `encode` | Verify encoding produces specific bytes |
+| `decode` | Verify decoding produces specific value |
+| `roundtrip` | Verify value survives encode→decode |
+| `encode_error` | Verify encoding fails with specific error |
+| `decode_error` | Verify decoding fails with specific error |
+
+### Supported Options
+
+| Option | Description |
+|--------|-------------|
+| `allow_nul` | Allow NUL characters in strings |
+| `allow_nan_infinity` | Allow NaN and Infinity values |
+| `max_depth` | Maximum container nesting depth |
+| `max_string_length` | Maximum string length in bytes |
+| `max_chunks` | Maximum string chunks |
+
+### Error Type Mapping
+
+The runner maps bonjson errors to standardized error types:
+
+| Error Type | bonjson Error |
+|------------|---------------|
+| `truncated` | `TruncatedDataError` |
+| `trailing_bytes` | `TrailingDataError` |
+| `invalid_type_code` | `InvalidTypeCodeError` |
+| `invalid_utf8` | `InvalidUTF8Error` |
+| `nul_character` | `NullInStringError` |
+| `duplicate_key` | `DuplicateKeyError` |
+| `invalid_data` | `InvalidValueError`, `UnsupportedValueError` (NaN/Inf) |
+| `value_out_of_range` | `ValueRangeError` |
+| `too_many_chunks` | `TooManyChunksError` |
+| `empty_chunk_continuation` | `EmptyChunkContinuationError` |
+| `max_depth_exceeded` | `MaxDepthError` |
+
+### $number Marker
+
+Special numeric values use the `$number` marker:
+- `{"$number": "NaN"}` - IEEE 754 NaN
+- `{"$number": "Infinity"}` - positive infinity
+- `{"$number": "-Infinity"}` - negative infinity
+- `{"$number": "18446744073709551615"}` - large integers
+- `{"$number": "0x1.921fb54442d18p+1"}` - hex floats (for exact bit patterns)
+
+### Encoding Differences
+
+go-bonjson makes valid encoding choices that may differ from test expectations:
+- **Integer encoding**: Always uses signed integer type codes (`0x78-0x7f`) even for positive values. The spec allows either signed or unsigned encodings.
+- **Error types**: Reports `truncated` instead of `unclosed_container` when data ends unexpectedly (both indicate the same underlying problem).
 
 
 ## Potential Improvements

@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"encoding"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -1030,6 +1031,7 @@ func (d *decodeState) storeNull(v reflect.Value, _ reflect.Value) error {
 }
 
 func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
+	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	if err := d.enterContainer(); err != nil {
 		return err
 	}
@@ -1060,6 +1062,11 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 	for {
 		tc, err := d.peekByte()
 		if err != nil {
+			// EOF at container boundary means unclosed container
+			var truncErr *TruncatedDataError
+			if errors.As(err, &truncErr) {
+				return &UnclosedContainerError{ContainerType: "array", Offset: int64(containerStart)}
+			}
 			return err
 		}
 
@@ -1143,6 +1150,7 @@ func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
 }
 
 func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
+	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	t := v.Type()
 	kt := t.Key()
 
@@ -1168,6 +1176,11 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 	for {
 		tc, err := d.peekByte()
 		if err != nil {
+			// EOF at container boundary means unclosed container
+			var truncErr *TruncatedDataError
+			if errors.As(err, &truncErr) {
+				return &UnclosedContainerError{ContainerType: "object", Offset: int64(containerStart)}
+			}
 			return err
 		}
 
@@ -1258,6 +1271,7 @@ func (d *decodeState) convertMapKey(kt reflect.Type, key []byte, keyStart int) (
 }
 
 func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
+	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	fields := cachedTypeFields(v.Type())
 	seenFields := d.pushSeenStructFields(fields.fieldCount)
 	defer d.popSeenStructFields()
@@ -1265,6 +1279,11 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 	for {
 		tc, err := d.peekByte()
 		if err != nil {
+			// EOF at container boundary means unclosed container
+			var truncErr *TruncatedDataError
+			if errors.As(err, &truncErr) {
+				return &UnclosedContainerError{ContainerType: "object", Offset: int64(containerStart)}
+			}
 			return err
 		}
 
@@ -1469,11 +1488,18 @@ func (d *decodeState) skipContainer() error {
 
 // arrayInterface decodes an array into []any
 func (d *decodeState) arrayInterface() []any {
+	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	var v = make([]any, 0)
 	for {
 		tc, err := d.peekByte()
 		if err != nil {
-			d.saveError(err)
+			// EOF at container boundary means unclosed container
+			var truncErr *TruncatedDataError
+			if errors.As(err, &truncErr) {
+				d.saveError(&UnclosedContainerError{ContainerType: "array", Offset: int64(containerStart)})
+			} else {
+				d.saveError(err)
+			}
 			return v
 		}
 		if tc == typeContainerEnd {
@@ -1494,12 +1520,19 @@ func (d *decodeState) arrayInterface() []any {
 
 // objectInterface decodes an object into map[string]any
 func (d *decodeState) objectInterface() map[string]any {
+	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	m := make(map[string]any)
 
 	for {
 		tc, err := d.peekByte()
 		if err != nil {
-			d.saveError(err)
+			// EOF at container boundary means unclosed container
+			var truncErr *TruncatedDataError
+			if errors.As(err, &truncErr) {
+				d.saveError(&UnclosedContainerError{ContainerType: "object", Offset: int64(containerStart)})
+			} else {
+				d.saveError(err)
+			}
 			return m
 		}
 		if tc == typeContainerEnd {
