@@ -756,3 +756,357 @@ func TestNaNInfinityDecodeFloat64Allow(t *testing.T) {
 		})
 	}
 }
+
+// ============================================================================
+// Configuration Interaction Tests
+// ============================================================================
+
+// Test multiple decoder configurations combined
+func TestCombinedDecoderConfigurations(t *testing.T) {
+	t.Run("nul_and_utf8_together", func(t *testing.T) {
+		// String with NUL and invalid UTF-8
+		// 0x80 alone is invalid UTF-8, then NUL
+		invalidData := []byte{typeShortStringBase + 3, 0x80, 0x00, 'a'}
+
+		// With AllowNUL and UTF8Replace
+		dec := NewDecoder(bytes.NewReader(invalidData))
+		dec.AllowNUL()
+		dec.SetInvalidUTF8Mode(UTF8Replace)
+
+		var s string
+		err := dec.Decode(&s)
+		if err != nil {
+			t.Errorf("AllowNUL + UTF8Replace should succeed: %v", err)
+		}
+	})
+
+	t.Run("depth_and_string_limits", func(t *testing.T) {
+		// Create nested structure with strings
+		data, _ := Marshal(map[string]any{
+			"nested": map[string]string{
+				"key": "short",
+			},
+		})
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.SetMaxDepth(10)
+		dec.SetMaxStringLength(1000)
+
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			t.Errorf("should decode within limits: %v", err)
+		}
+	})
+
+	t.Run("all_relaxed_modes", func(t *testing.T) {
+		// Test all relaxed modes together
+		data, _ := Marshal(map[string]any{"a": 1, "b": 2})
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.AllowNUL()
+		dec.SetInvalidUTF8Mode(UTF8Ignore)
+		dec.SetDuplicateKeyMode(DupKeyKeepLast)
+		dec.SetNaNInfinityMode(NaNInfAllow)
+
+		var v map[string]any
+		if err := dec.Decode(&v); err != nil {
+			t.Errorf("all relaxed modes should work: %v", err)
+		}
+	})
+}
+
+// Test limit edge values
+func TestLimitEdgeValues(t *testing.T) {
+	t.Run("depth_at_limit", func(t *testing.T) {
+		// Create structure exactly at depth limit
+		const depth = 5
+		var buf bytes.Buffer
+		for i := 0; i < depth; i++ {
+			buf.WriteByte(typeArrayStart)
+		}
+		buf.WriteByte(0x01) // value 1
+		for i := 0; i < depth; i++ {
+			buf.WriteByte(typeContainerEnd)
+		}
+
+		dec := NewDecoder(&buf)
+		dec.SetMaxDepth(depth)
+
+		var v any
+		err := dec.Decode(&v)
+		if err != nil {
+			t.Errorf("depth %d should succeed with limit %d: %v", depth, depth, err)
+		}
+	})
+
+	t.Run("depth_one_over_limit", func(t *testing.T) {
+		// Create structure one over depth limit
+		const limit = 5
+		const depth = limit + 1
+		var buf bytes.Buffer
+		for i := 0; i < depth; i++ {
+			buf.WriteByte(typeArrayStart)
+		}
+		buf.WriteByte(0x01)
+		for i := 0; i < depth; i++ {
+			buf.WriteByte(typeContainerEnd)
+		}
+
+		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+		dec.SetMaxDepth(limit)
+
+		var v any
+		err := dec.Decode(&v)
+		if err == nil {
+			t.Error("depth over limit should fail")
+		}
+	})
+
+	t.Run("string_at_limit", func(t *testing.T) {
+		// Create string exactly at limit
+		const limit = 10
+		s := strings.Repeat("x", limit)
+		data, _ := Marshal(s)
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.SetMaxStringLength(limit)
+
+		var decoded string
+		err := dec.Decode(&decoded)
+		if err != nil {
+			t.Errorf("string at limit should succeed: %v", err)
+		}
+	})
+
+	t.Run("string_one_over_limit", func(t *testing.T) {
+		// Create string one over limit - must be >15 chars to use long string encoding
+		// (short strings ≤15 chars bypass length limit check)
+		const limit = 20
+		s := strings.Repeat("x", limit+1)
+		data, _ := Marshal(s)
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.SetMaxStringLength(limit)
+
+		var decoded string
+		err := dec.Decode(&decoded)
+		if err == nil {
+			t.Error("string over limit should fail")
+		}
+	})
+
+	t.Run("zero_string_length_unlimited", func(t *testing.T) {
+		// Zero string length limit means unlimited
+		longStr := strings.Repeat("x", 1000)
+		data, _ := Marshal(longStr)
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.SetMaxStringLength(0) // Unlimited
+
+		var v string
+		err := dec.Decode(&v)
+		if err != nil {
+			t.Errorf("zero string length limit should be unlimited: %v", err)
+		}
+	})
+
+	t.Run("zero_chunks_unlimited", func(t *testing.T) {
+		// Zero chunk limit means unlimited
+		dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
+		dec.SetMaxChunks(0) // Unlimited
+
+		var v any
+		err := dec.Decode(&v)
+		if err != nil {
+			t.Errorf("zero chunk limit should be unlimited: %v", err)
+		}
+	})
+}
+
+// Test encoder configuration
+func TestEncoderConfigurationModes(t *testing.T) {
+	t.Run("nan_stringify_mode", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.SetNaNInfinityMode(NaNInfStringify)
+
+		err := enc.Encode(math.NaN())
+		if err != nil {
+			t.Fatalf("NaNInfStringify encode error: %v", err)
+		}
+
+		// Should be encoded as string "NaN"
+		dec := NewDecoder(&buf)
+		var v any
+		dec.Decode(&v)
+		if s, ok := v.(string); !ok || s != "NaN" {
+			t.Errorf("expected string \"NaN\", got %v (%T)", v, v)
+		}
+	})
+
+	t.Run("infinity_stringify_mode", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.SetNaNInfinityMode(NaNInfStringify)
+
+		enc.Encode(math.Inf(1))
+
+		dec := NewDecoder(&buf)
+		var v any
+		dec.Decode(&v)
+		if s, ok := v.(string); !ok || s != "Infinity" {
+			t.Errorf("expected string \"Infinity\", got %v (%T)", v, v)
+		}
+	})
+
+	t.Run("negative_infinity_stringify", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.SetNaNInfinityMode(NaNInfStringify)
+
+		enc.Encode(math.Inf(-1))
+
+		dec := NewDecoder(&buf)
+		var v any
+		dec.Decode(&v)
+		if s, ok := v.(string); !ok || s != "-Infinity" {
+			t.Errorf("expected string \"-Infinity\", got %v (%T)", v, v)
+		}
+	})
+
+	t.Run("nan_allow_mode_roundtrip", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.SetNaNInfinityMode(NaNInfAllow)
+
+		err := enc.Encode(math.NaN())
+		if err != nil {
+			t.Fatalf("NaNInfAllow encode error: %v", err)
+		}
+
+		dec := NewDecoder(&buf)
+		dec.SetNaNInfinityMode(NaNInfAllow)
+		var v float64
+		dec.Decode(&v)
+		if !math.IsNaN(v) {
+			t.Errorf("expected NaN, got %v", v)
+		}
+	})
+}
+
+// Test that configurations are independent across decoders
+func TestConfigurationIndependence(t *testing.T) {
+	data, _ := Marshal("test")
+
+	// Create two decoders with different configurations
+	dec1 := NewDecoder(bytes.NewReader(data))
+	dec1.AllowNUL()
+	dec1.SetMaxDepth(5)
+
+	dec2 := NewDecoder(bytes.NewReader(data))
+	dec2.SetMaxDepth(100)
+
+	// Configurations should be independent
+	var v1, v2 string
+	if err := dec1.Decode(&v1); err != nil {
+		t.Errorf("dec1 decode error: %v", err)
+	}
+	if err := dec2.Decode(&v2); err != nil {
+		t.Errorf("dec2 decode error: %v", err)
+	}
+}
+
+// Test encoder and decoder mode consistency
+func TestEncoderDecoderModeConsistency(t *testing.T) {
+	t.Run("both_allow_nan", func(t *testing.T) {
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.SetNaNInfinityMode(NaNInfAllow)
+		enc.Encode(math.NaN())
+		enc.Encode(math.Inf(1))
+		enc.Encode(math.Inf(-1))
+
+		dec := NewDecoder(&buf)
+		dec.SetNaNInfinityMode(NaNInfAllow)
+
+		var nan, posInf, negInf float64
+		dec.Decode(&nan)
+		dec.Decode(&posInf)
+		dec.Decode(&negInf)
+
+		if !math.IsNaN(nan) {
+			t.Errorf("expected NaN, got %v", nan)
+		}
+		if !math.IsInf(posInf, 1) {
+			t.Errorf("expected +Inf, got %v", posInf)
+		}
+		if !math.IsInf(negInf, -1) {
+			t.Errorf("expected -Inf, got %v", negInf)
+		}
+	})
+
+	t.Run("encoder_stringify_decoder_relaxed", func(t *testing.T) {
+		// Encoder stringifies, decoder should get strings
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.SetNaNInfinityMode(NaNInfStringify)
+		enc.Encode(math.NaN())
+
+		dec := NewDecoder(&buf)
+		var v any
+		dec.Decode(&v)
+
+		// Should be a string even without special decoder config
+		if s, ok := v.(string); !ok || s != "NaN" {
+			t.Errorf("expected string \"NaN\", got %v (%T)", v, v)
+		}
+	})
+}
+
+// Test DisallowUnknownFields combined with other options
+func TestDisallowUnknownFieldsCombined(t *testing.T) {
+	type KnownFields struct {
+		Name  string `bonjson:"name"`
+		Value int    `bonjson:"value"`
+	}
+
+	t.Run("with_duplicate_key_keepfirst", func(t *testing.T) {
+		// Object with unknown field and duplicate
+		data, _ := Marshal(map[string]any{
+			"name":    "test",
+			"value":   42,
+			"unknown": "should fail",
+		})
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		dec.SetDuplicateKeyMode(DupKeyKeepFirst)
+
+		var v KnownFields
+		err := dec.Decode(&v)
+		if err == nil {
+			t.Error("DisallowUnknownFields should still fail with unknown field")
+		}
+	})
+
+	t.Run("known_fields_only", func(t *testing.T) {
+		data, _ := Marshal(map[string]any{
+			"name":  "test",
+			"value": 42,
+		})
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		dec.SetDuplicateKeyMode(DupKeyKeepFirst)
+		dec.SetInvalidUTF8Mode(UTF8Ignore)
+
+		var v KnownFields
+		err := dec.Decode(&v)
+		if err != nil {
+			t.Errorf("should succeed with only known fields: %v", err)
+		}
+		if v.Name != "test" || v.Value != 42 {
+			t.Errorf("unexpected values: %+v", v)
+		}
+	})
+}

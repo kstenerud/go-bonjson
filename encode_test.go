@@ -1228,3 +1228,890 @@ func TestPointerTextMarshalerInterface(t *testing.T) {
 		t.Errorf("got %q, want %q", got, "ptr:world")
 	}
 }
+
+// ============================================================================
+// Comprehensive Encoder Error Handling Tests
+// ============================================================================
+
+// TestUnsupportedTypeErrorDetails verifies that UnsupportedTypeError contains
+// the correct type information and produces a useful error message.
+func TestUnsupportedTypeErrorDetails(t *testing.T) {
+	tests := []struct {
+		name         string
+		value        any
+		expectedType string
+	}{
+		{"channel", make(chan int), "chan int"},
+		{"bidirectional_channel", make(chan string), "chan string"},
+		{"send_only_channel", make(chan<- int), "chan<- int"},
+		{"receive_only_channel", make(<-chan int), "<-chan int"},
+		{"func", func() {}, "func()"},
+		{"func_with_args", func(int) string { return "" }, "func(int) string"},
+		{"complex64", complex64(1 + 2i), "complex64"},
+		{"complex128", complex128(1 + 2i), "complex128"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Marshal(tt.value)
+			if err == nil {
+				t.Fatal("expected error for unsupported type")
+			}
+
+			var ute *UnsupportedTypeError
+			if !errors.As(err, &ute) {
+				t.Fatalf("expected UnsupportedTypeError, got %T: %v", err, err)
+			}
+
+			if ute.Type.String() != tt.expectedType {
+				t.Errorf("error type = %q, want %q", ute.Type.String(), tt.expectedType)
+			}
+
+			// Verify error message format
+			if !strings.Contains(err.Error(), tt.expectedType) {
+				t.Errorf("error message %q should contain type %q", err.Error(), tt.expectedType)
+			}
+		})
+	}
+}
+
+// TestUnsupportedTypeInNestedStructure verifies that unsupported types in
+// nested structures still produce the correct error.
+func TestUnsupportedTypeInNestedStructure(t *testing.T) {
+	type Nested struct {
+		Value chan int
+	}
+	type Outer struct {
+		Inner Nested
+	}
+
+	_, err := Marshal(Outer{Inner: Nested{Value: make(chan int)}})
+	if err == nil {
+		t.Fatal("expected error for unsupported type in nested struct")
+	}
+
+	var ute *UnsupportedTypeError
+	if !errors.As(err, &ute) {
+		t.Fatalf("expected UnsupportedTypeError, got %T: %v", err, err)
+	}
+
+	if ute.Type.String() != "chan int" {
+		t.Errorf("error type = %q, want %q", ute.Type.String(), "chan int")
+	}
+}
+
+// TestUnsupportedTypeInMap verifies that unsupported types as map values
+// produce the correct error.
+func TestUnsupportedTypeInMap(t *testing.T) {
+	m := map[string]any{
+		"valid": 123,
+		"bad":   make(chan int),
+	}
+
+	_, err := Marshal(m)
+	if err == nil {
+		t.Fatal("expected error for unsupported type in map")
+	}
+
+	var ute *UnsupportedTypeError
+	if !errors.As(err, &ute) {
+		t.Fatalf("expected UnsupportedTypeError, got %T: %v", err, err)
+	}
+}
+
+// TestUnsupportedTypeInSlice verifies that unsupported types in slices
+// produce the correct error.
+func TestUnsupportedTypeInSlice(t *testing.T) {
+	s := []any{123, "hello", make(chan int)}
+
+	_, err := Marshal(s)
+	if err == nil {
+		t.Fatal("expected error for unsupported type in slice")
+	}
+
+	var ute *UnsupportedTypeError
+	if !errors.As(err, &ute) {
+		t.Fatalf("expected UnsupportedTypeError, got %T: %v", err, err)
+	}
+}
+
+// TestUnsupportedTypeViaInterface verifies that interface values containing
+// unsupported types produce the correct error.
+func TestUnsupportedTypeViaInterface(t *testing.T) {
+	var iface any = func() {}
+
+	_, err := Marshal(iface)
+	if err == nil {
+		t.Fatal("expected error for unsupported type via interface")
+	}
+
+	var ute *UnsupportedTypeError
+	if !errors.As(err, &ute) {
+		t.Fatalf("expected UnsupportedTypeError, got %T: %v", err, err)
+	}
+}
+
+// TestMarshalerErrorDetails verifies that MarshalerError contains the correct
+// information about the failing marshaler.
+func TestMarshalerErrorDetails(t *testing.T) {
+	_, err := Marshal(errorMarshalerEncode{})
+	if err == nil {
+		t.Fatal("expected error from marshaler")
+	}
+
+	var me *MarshalerError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected MarshalerError, got %T: %v", err, err)
+	}
+
+	// Verify type information
+	if me.Type.String() != "bonjson.errorMarshalerEncode" {
+		t.Errorf("error type = %q, want %q", me.Type.String(), "bonjson.errorMarshalerEncode")
+	}
+
+	// Verify method name
+	if me.sourceFunc != "MarshalBONJSON" {
+		t.Errorf("sourceFunc = %q, want %q", me.sourceFunc, "MarshalBONJSON")
+	}
+
+	// Verify error message format
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "errorMarshalerEncode") {
+		t.Errorf("error message %q should contain type name", errMsg)
+	}
+	if !strings.Contains(errMsg, "MarshalBONJSON") {
+		t.Errorf("error message %q should contain method name", errMsg)
+	}
+}
+
+// TestMarshalerErrorUnwrap verifies that MarshalerError correctly implements
+// the errors.Unwrap interface.
+func TestMarshalerErrorUnwrap(t *testing.T) {
+	originalErr := errors.New("original error")
+
+	type customMarshaler struct{}
+	customMarshalerFunc := func() ([]byte, error) {
+		return nil, originalErr
+	}
+	_ = customMarshalerFunc // Just for type definition
+
+	_, err := Marshal(errorMarshalerEncode{})
+	if err == nil {
+		t.Fatal("expected error from marshaler")
+	}
+
+	var me *MarshalerError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected MarshalerError, got %T: %v", err, err)
+	}
+
+	// Verify Unwrap returns the original error
+	unwrapped := errors.Unwrap(me)
+	if unwrapped == nil {
+		t.Error("Unwrap() returned nil, expected original error")
+	}
+}
+
+// TestTextMarshalerErrorDetails verifies that MarshalerError from TextMarshaler
+// contains the correct method name.
+func TestTextMarshalerErrorDetails(t *testing.T) {
+	_, err := Marshal(errorTextMarshalerEncode{})
+	if err == nil {
+		t.Fatal("expected error from text marshaler")
+	}
+
+	var me *MarshalerError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected MarshalerError, got %T: %v", err, err)
+	}
+
+	// Verify method name is MarshalText, not MarshalBONJSON
+	if me.sourceFunc != "MarshalText" {
+		t.Errorf("sourceFunc = %q, want %q", me.sourceFunc, "MarshalText")
+	}
+}
+
+// TestMarshalerErrorInNestedStruct verifies that marshaler errors bubble up
+// correctly from nested structures.
+func TestMarshalerErrorInNestedStruct(t *testing.T) {
+	type Outer struct {
+		Name  string
+		Inner errorMarshalerEncode
+	}
+
+	_, err := Marshal(Outer{Name: "test"})
+	if err == nil {
+		t.Fatal("expected error from nested marshaler")
+	}
+
+	var me *MarshalerError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected MarshalerError, got %T: %v", err, err)
+	}
+}
+
+// TestMarshalerErrorInMap verifies that marshaler errors bubble up from maps.
+func TestMarshalerErrorInMap(t *testing.T) {
+	m := map[string]any{
+		"good": 123,
+		"bad":  errorMarshalerEncode{},
+	}
+
+	_, err := Marshal(m)
+	if err == nil {
+		t.Fatal("expected error from map value marshaler")
+	}
+
+	var me *MarshalerError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected MarshalerError, got %T: %v", err, err)
+	}
+}
+
+// TestMarshalerErrorInSlice verifies that marshaler errors bubble up from slices.
+func TestMarshalerErrorInSlice(t *testing.T) {
+	s := []any{123, errorMarshalerEncode{}}
+
+	_, err := Marshal(s)
+	if err == nil {
+		t.Fatal("expected error from slice element marshaler")
+	}
+
+	var me *MarshalerError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected MarshalerError, got %T: %v", err, err)
+	}
+}
+
+// TestCycleDetectionVariants tests cycle detection for different container types.
+func TestCycleDetectionVariants(t *testing.T) {
+	t.Run("struct_cycle", func(t *testing.T) {
+		type Node struct {
+			Next *Node
+		}
+		n := &Node{}
+		n.Next = n
+
+		_, err := Marshal(n)
+		if err == nil {
+			t.Fatal("expected error for struct cycle")
+		}
+
+		var uve *UnsupportedValueError
+		if !errors.As(err, &uve) {
+			t.Fatalf("expected UnsupportedValueError, got %T: %v", err, err)
+		}
+
+		if !strings.Contains(uve.Str, "cycle") {
+			t.Errorf("error message %q should mention cycle", uve.Str)
+		}
+	})
+
+	t.Run("map_cycle", func(t *testing.T) {
+		m := make(map[string]any)
+		m["self"] = m
+
+		_, err := Marshal(m)
+		if err == nil {
+			t.Fatal("expected error for map cycle")
+		}
+
+		var uve *UnsupportedValueError
+		if !errors.As(err, &uve) {
+			t.Fatalf("expected UnsupportedValueError, got %T: %v", err, err)
+		}
+
+		if !strings.Contains(uve.Str, "cycle") {
+			t.Errorf("error message %q should mention cycle", uve.Str)
+		}
+	})
+
+	t.Run("slice_cycle", func(t *testing.T) {
+		s := make([]any, 1)
+		s[0] = s
+
+		_, err := Marshal(s)
+		if err == nil {
+			t.Fatal("expected error for slice cycle")
+		}
+
+		var uve *UnsupportedValueError
+		if !errors.As(err, &uve) {
+			t.Fatalf("expected UnsupportedValueError, got %T: %v", err, err)
+		}
+
+		if !strings.Contains(uve.Str, "cycle") {
+			t.Errorf("error message %q should mention cycle", uve.Str)
+		}
+	})
+
+	t.Run("indirect_cycle", func(t *testing.T) {
+		type A struct {
+			B *struct {
+				A *A
+			}
+		}
+		a := &A{B: &struct{ A *A }{}}
+		a.B.A = a
+
+		_, err := Marshal(a)
+		if err == nil {
+			t.Fatal("expected error for indirect cycle")
+		}
+
+		var uve *UnsupportedValueError
+		if !errors.As(err, &uve) {
+			t.Fatalf("expected UnsupportedValueError, got %T: %v", err, err)
+		}
+	})
+}
+
+// TestCycleErrorContainsType verifies that cycle errors mention the type involved.
+func TestCycleErrorContainsType(t *testing.T) {
+	type LinkedNode struct {
+		Value int
+		Next  *LinkedNode
+	}
+
+	n := &LinkedNode{Value: 1}
+	n.Next = n
+
+	_, err := Marshal(n)
+	if err == nil {
+		t.Fatal("expected error for cycle")
+	}
+
+	var uve *UnsupportedValueError
+	if !errors.As(err, &uve) {
+		t.Fatalf("expected UnsupportedValueError, got %T: %v", err, err)
+	}
+
+	// Error should mention the type
+	if !strings.Contains(err.Error(), "LinkedNode") {
+		t.Errorf("error message %q should mention type name", err.Error())
+	}
+}
+
+// TestDeepNestingNoCycle verifies that very deep but non-cyclic structures
+// don't produce false cycle detection errors.
+func TestDeepNestingNoCycle(t *testing.T) {
+	// Build a deeply nested but non-cyclic structure
+	type Deep struct {
+		Value int
+		Child *Deep
+	}
+
+	root := &Deep{Value: 0}
+	current := root
+	// Create a chain of 100 nodes (well under 1000 threshold)
+	for i := 1; i < 100; i++ {
+		current.Child = &Deep{Value: i}
+		current = current.Child
+	}
+
+	data, err := Marshal(root)
+	if err != nil {
+		t.Fatalf("unexpected error for deep but non-cyclic structure: %v", err)
+	}
+
+	var decoded Deep
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	// Verify the chain is intact
+	current2 := &decoded
+	for i := 0; i < 100; i++ {
+		if current2 == nil {
+			t.Fatalf("chain broke at depth %d", i)
+		}
+		if current2.Value != i {
+			t.Errorf("at depth %d: value = %d, want %d", i, current2.Value, i)
+		}
+		current2 = current2.Child
+	}
+}
+
+// TestPointerMarshalerError verifies that errors from pointer-receiver marshalers
+// are handled correctly.
+func TestPointerMarshalerError(t *testing.T) {
+	type ptrErrorMarshaler struct {
+		value int
+	}
+	// Can't define methods in test, so use the existing errorMarshalerEncode via pointer
+	ptr := &errorMarshalerEncode{}
+
+	_, err := Marshal(ptr)
+	if err == nil {
+		t.Fatal("expected error from pointer marshaler")
+	}
+
+	var me *MarshalerError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected MarshalerError, got %T: %v", err, err)
+	}
+}
+
+// TestNilPointerToMarshalerIsNull verifies that nil pointers to types
+// implementing Marshaler encode as null rather than calling the marshaler.
+func TestNilPointerToMarshalerIsNull(t *testing.T) {
+	var ptr *customMarshaler = nil
+
+	data, err := Marshal(ptr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var decoded any
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if decoded != nil {
+		t.Errorf("decoded = %v (%T), want nil", decoded, decoded)
+	}
+}
+
+// ============================================================================
+// Additional Custom Marshaler Edge Case Tests
+// ============================================================================
+
+// Test that Marshaler takes priority over TextMarshaler
+type dualMarshaler struct {
+	value int
+}
+
+func (d dualMarshaler) MarshalBONJSON() ([]byte, error) {
+	return Marshal(d.value * 2) // Returns numeric BONJSON
+}
+
+func (d dualMarshaler) MarshalText() ([]byte, error) {
+	return []byte("text"), nil // Would return string if used
+}
+
+func (d *dualMarshaler) UnmarshalBONJSON(data []byte) error {
+	var v int
+	if err := Unmarshal(data, &v); err != nil {
+		return err
+	}
+	d.value = v / 2
+	return nil
+}
+
+func (d *dualMarshaler) UnmarshalText(data []byte) error {
+	d.value = -1 // Different behavior if used
+	return nil
+}
+
+func TestMarshalerPriorityOverTextMarshaler(t *testing.T) {
+	d := dualMarshaler{value: 21}
+
+	data, err := Marshal(d)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Should use MarshalBONJSON, so the value should be 42 (21 * 2)
+	var decoded int
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded != 42 {
+		t.Errorf("decoded = %d, want 42 (MarshalBONJSON should be used)", decoded)
+	}
+}
+
+func TestUnmarshalerPriorityOverTextUnmarshaler(t *testing.T) {
+	// Encode a value that MarshalBONJSON would produce
+	data, _ := Marshal(84) // 84 / 2 = 42
+
+	var d dualMarshaler
+	if err := Unmarshal(data, &d); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	// UnmarshalBONJSON divides by 2
+	if d.value != 42 {
+		t.Errorf("value = %d, want 42 (UnmarshalBONJSON should be used)", d.value)
+	}
+}
+
+// Test Marshaler that returns empty BONJSON (null)
+type nullMarshaler struct{}
+
+func (n nullMarshaler) MarshalBONJSON() ([]byte, error) {
+	return Marshal(nil)
+}
+
+func TestMarshalerReturningNull(t *testing.T) {
+	n := nullMarshaler{}
+
+	data, err := Marshal(n)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded any
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded != nil {
+		t.Errorf("decoded = %v, want nil", decoded)
+	}
+}
+
+// Test Marshaler that returns complex structure
+type complexMarshaler struct {
+	name string
+	age  int
+}
+
+func (c complexMarshaler) MarshalBONJSON() ([]byte, error) {
+	return Marshal(map[string]any{
+		"person_name": c.name,
+		"person_age":  c.age,
+	})
+}
+
+func (c *complexMarshaler) UnmarshalBONJSON(data []byte) error {
+	var m map[string]any
+	if err := Unmarshal(data, &m); err != nil {
+		return err
+	}
+	if name, ok := m["person_name"].(string); ok {
+		c.name = name
+	}
+	if age, ok := m["person_age"].(int64); ok {
+		c.age = int(age)
+	}
+	return nil
+}
+
+func TestMarshalerReturningComplexStructure(t *testing.T) {
+	c := complexMarshaler{name: "Alice", age: 30}
+
+	data, err := Marshal(c)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded complexMarshaler
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded.name != c.name || decoded.age != c.age {
+		t.Errorf("decoded = %+v, want %+v", decoded, c)
+	}
+}
+
+// Test value receiver marshaler accessed via pointer
+type valueReceiverMarshaler struct {
+	value int
+}
+
+func (v valueReceiverMarshaler) MarshalBONJSON() ([]byte, error) {
+	return Marshal(v.value)
+}
+
+func TestValueReceiverMarshalerViaPointer(t *testing.T) {
+	v := &valueReceiverMarshaler{value: 42}
+
+	data, err := Marshal(v)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded int
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded != 42 {
+		t.Errorf("decoded = %d, want 42", decoded)
+	}
+}
+
+// Test pointer receiver marshaler on struct field value
+// (This tests that the encoder handles addressability correctly)
+type ptrOnlyMarshaler struct {
+	Value int
+}
+
+func (p *ptrOnlyMarshaler) MarshalBONJSON() ([]byte, error) {
+	return Marshal(p.Value * 10)
+}
+
+func TestPtrMarshalerInStructField(t *testing.T) {
+	t.Run("pointer_field_uses_marshaler", func(t *testing.T) {
+		// Pointer field should use the marshaler
+		type ContainerPtr struct {
+			Inner *ptrOnlyMarshaler `bonjson:"inner"`
+		}
+
+		c := ContainerPtr{Inner: &ptrOnlyMarshaler{Value: 5}}
+		data, err := Marshal(c)
+		if err != nil {
+			t.Fatalf("Marshal error: %v", err)
+		}
+
+		var decoded map[string]int
+		if err := Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("Unmarshal error: %v", err)
+		}
+
+		// The pointer marshaler should be called
+		if decoded["inner"] != 50 {
+			t.Errorf("inner = %d, want 50", decoded["inner"])
+		}
+	})
+
+	t.Run("value_field_marshaler_called_when_addressable", func(t *testing.T) {
+		// Value field should also use the marshaler when the container is addressable
+		type ContainerVal struct {
+			Inner ptrOnlyMarshaler `bonjson:"inner"`
+		}
+
+		c := &ContainerVal{Inner: ptrOnlyMarshaler{Value: 5}}
+		data, err := Marshal(c)
+		if err != nil {
+			t.Fatalf("Marshal error: %v", err)
+		}
+
+		var decoded map[string]int
+		if err := Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("Unmarshal error: %v", err)
+		}
+
+		// When marshaling via pointer, field should be addressable
+		if decoded["inner"] != 50 {
+			t.Errorf("inner = %d, want 50", decoded["inner"])
+		}
+	})
+}
+
+// Test RawMessage edge cases
+func TestRawMessageEmpty(t *testing.T) {
+	// Empty RawMessage should encode as null
+	var raw RawMessage
+
+	data, err := Marshal(raw)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded any
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded != nil {
+		t.Errorf("decoded = %v, want nil", decoded)
+	}
+}
+
+func TestRawMessageNested(t *testing.T) {
+	// Create nested structure
+	inner, _ := Marshal(map[string]int{"x": 1, "y": 2})
+	outer, _ := Marshal(map[string]RawMessage{"data": inner})
+
+	var decoded map[string]RawMessage
+	if err := Unmarshal(outer, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	// Verify inner RawMessage can be decoded
+	var innerDecoded map[string]int
+	if err := Unmarshal(decoded["data"], &innerDecoded); err != nil {
+		t.Fatalf("Inner unmarshal error: %v", err)
+	}
+
+	if innerDecoded["x"] != 1 || innerDecoded["y"] != 2 {
+		t.Errorf("inner = %v, want map[x:1 y:2]", innerDecoded)
+	}
+}
+
+func TestRawMessagePreservesExactBytes(t *testing.T) {
+	// Create a RawMessage from encoded data
+	original := map[string]any{"key": "value", "num": int64(42)}
+	encoded, _ := Marshal(original)
+
+	raw := RawMessage(encoded)
+
+	// Marshal and unmarshal the RawMessage
+	wrapped, _ := Marshal(raw)
+	var decoded RawMessage
+	Unmarshal(wrapped, &decoded)
+
+	// Bytes should be identical
+	if !bytes.Equal(encoded, decoded) {
+		t.Errorf("bytes not preserved:\n  original: %v\n  decoded:  %v", encoded, decoded)
+	}
+}
+
+// Test Unmarshaler that modifies shared state
+type stateTrackingUnmarshaler struct {
+	callCount *int
+	value     string
+}
+
+func (s *stateTrackingUnmarshaler) UnmarshalBONJSON(data []byte) error {
+	*s.callCount++
+	return Unmarshal(data, &s.value)
+}
+
+func TestUnmarshalerCallCount(t *testing.T) {
+	callCount := 0
+	su := &stateTrackingUnmarshaler{callCount: &callCount}
+
+	data, _ := Marshal("test")
+
+	if err := Unmarshal(data, su); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Errorf("callCount = %d, want 1", callCount)
+	}
+	if su.value != "test" {
+		t.Errorf("value = %q, want %q", su.value, "test")
+	}
+}
+
+// Test slice of custom marshalers
+func TestSliceOfMarshalers(t *testing.T) {
+	slice := []customMarshaler{
+		{Value: 10},
+		{Value: 20},
+		{Value: 30},
+	}
+
+	data, err := Marshal(slice)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded []int
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	// customMarshaler doubles the value
+	expected := []int{20, 40, 60}
+	if len(decoded) != len(expected) {
+		t.Fatalf("len = %d, want %d", len(decoded), len(expected))
+	}
+	for i, v := range decoded {
+		if v != expected[i] {
+			t.Errorf("decoded[%d] = %d, want %d", i, v, expected[i])
+		}
+	}
+}
+
+// Test map with marshaler values
+func TestMapOfMarshalers(t *testing.T) {
+	m := map[string]customMarshaler{
+		"a": {Value: 5},
+		"b": {Value: 10},
+	}
+
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded map[string]int
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded["a"] != 10 || decoded["b"] != 20 {
+		t.Errorf("decoded = %v, want map[a:10 b:20]", decoded)
+	}
+}
+
+// Test anonymous/embedded struct containing marshaler
+func TestAnonymousStructWithMarshaler(t *testing.T) {
+	// When a type implementing Marshaler is embedded, the outer struct
+	// itself should use the embedded marshaler for the whole struct.
+	// This is standard Go embedding behavior.
+	type Outer struct {
+		customMarshaler
+		Name string `bonjson:"name"`
+	}
+
+	o := Outer{
+		customMarshaler: customMarshaler{Value: 15},
+		Name:            "test",
+	}
+
+	data, err := Marshal(o)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Embedded Marshaler makes the outer type itself a Marshaler.
+	// customMarshaler.MarshalBONJSON returns Marshal(Value * 2) = 30
+	var decoded int
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	// The embedded marshaler is promoted to the outer struct
+	if decoded != 30 { // 15 * 2
+		t.Errorf("decoded = %d, want 30", decoded)
+	}
+}
+
+// Test TextMarshaler with empty result
+type emptyTextMarshaler struct{}
+
+func (e emptyTextMarshaler) MarshalText() ([]byte, error) {
+	return []byte(""), nil
+}
+
+func TestEmptyTextMarshaler(t *testing.T) {
+	e := emptyTextMarshaler{}
+
+	data, err := Marshal(e)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded string
+	if err := Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded != "" {
+		t.Errorf("decoded = %q, want empty string", decoded)
+	}
+}
+
+// Test Unmarshaler that partially consumes data (error case)
+type partialUnmarshaler struct {
+	valid bool
+}
+
+func (p *partialUnmarshaler) UnmarshalBONJSON(data []byte) error {
+	// Try to unmarshal, expecting an integer
+	var v int
+	if err := Unmarshal(data, &v); err != nil {
+		return err
+	}
+	p.valid = v > 0
+	return nil
+}
+
+func TestUnmarshalerWithTypeMismatch(t *testing.T) {
+	// Send a string instead of int
+	data, _ := Marshal("not an int")
+
+	var p partialUnmarshaler
+	err := Unmarshal(data, &p)
+	if err == nil {
+		t.Error("expected error when unmarshaler receives wrong type")
+	}
+}

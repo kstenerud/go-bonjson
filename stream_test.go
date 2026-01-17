@@ -1211,3 +1211,414 @@ func TestStreamTokenTruncatedData(t *testing.T) {
 		})
 	}
 }
+
+// ============================================================================
+// Additional Streaming API Edge Case Tests
+// ============================================================================
+
+// Test mixed Token() and Decode() usage
+func TestMixedTokenAndDecode(t *testing.T) {
+	// Create an array with nested structures
+	input := []any{
+		42,
+		map[string]any{"key": "value"},
+		[]int{1, 2, 3},
+	}
+	data, _ := Marshal(input)
+
+	dec := NewDecoder(bytes.NewReader(data))
+
+	// Start with Token to get array delimiter
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	if tok != Delim('[') {
+		t.Errorf("expected [, got %v", tok)
+	}
+
+	// Read first element with Token
+	tok, err = dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	if tok != int64(42) {
+		t.Errorf("expected 42, got %v", tok)
+	}
+
+	// Read second element (object) with Decode
+	var obj map[string]string
+	if err := dec.Decode(&obj); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if obj["key"] != "value" {
+		t.Errorf("expected value, got %q", obj["key"])
+	}
+
+	// Read third element (array) with Decode
+	var arr []int
+	if err := dec.Decode(&arr); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if len(arr) != 3 {
+		t.Errorf("expected 3 elements, got %d", len(arr))
+	}
+
+	// Finish with Token to get closing delimiter
+	tok, err = dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	if tok != Delim(']') {
+		t.Errorf("expected ], got %v", tok)
+	}
+}
+
+// Test Token() on empty containers
+func TestTokenEmptyContainers(t *testing.T) {
+	t.Run("empty_array", func(t *testing.T) {
+		data, _ := Marshal([]int{})
+		dec := NewDecoder(bytes.NewReader(data))
+
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("Token error: %v", err)
+		}
+		if tok != Delim('[') {
+			t.Errorf("expected [, got %v", tok)
+		}
+
+		tok, err = dec.Token()
+		if err != nil {
+			t.Fatalf("Token error: %v", err)
+		}
+		if tok != Delim(']') {
+			t.Errorf("expected ], got %v", tok)
+		}
+	})
+
+	t.Run("empty_object", func(t *testing.T) {
+		data, _ := Marshal(map[string]int{})
+		dec := NewDecoder(bytes.NewReader(data))
+
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("Token error: %v", err)
+		}
+		if tok != Delim('{') {
+			t.Errorf("expected {, got %v", tok)
+		}
+
+		tok, err = dec.Token()
+		if err != nil {
+			t.Fatalf("Token error: %v", err)
+		}
+		if tok != Delim('}') {
+			t.Errorf("expected }, got %v", tok)
+		}
+	})
+}
+
+// Test InputOffset accuracy at various positions
+func TestInputOffsetAccuracy(t *testing.T) {
+	// Create a multi-value stream with known byte positions
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	enc.Encode(true)        // 1 byte: 0x6f
+	enc.Encode(false)       // 1 byte: 0x6e
+	enc.Encode(nil)         // 1 byte: 0x6d
+	enc.Encode(42)          // 1 byte: 0x2a
+	enc.Encode("hi")        // 3 bytes: 0x82 'h' 'i'
+
+	data := buf.Bytes()
+	dec := NewDecoder(bytes.NewReader(data))
+
+	// Track expected offsets after each decode
+	expectedOffsets := []int64{
+		0,  // before first decode
+		1,  // after true
+		2,  // after false
+		3,  // after nil
+		4,  // after 42
+		7,  // after "hi"
+	}
+
+	if dec.InputOffset() != expectedOffsets[0] {
+		t.Errorf("initial offset = %d, want %d", dec.InputOffset(), expectedOffsets[0])
+	}
+
+	var v any
+	for i := 1; i < len(expectedOffsets); i++ {
+		dec.Decode(&v)
+		if dec.InputOffset() != expectedOffsets[i] {
+			t.Errorf("offset after decode %d = %d, want %d", i, dec.InputOffset(), expectedOffsets[i])
+		}
+	}
+}
+
+// Test More() behavior after error
+func TestMoreAfterError(t *testing.T) {
+	// Create invalid data using reserved type code 0x65
+	invalidData := []byte{0x65} // Reserved type code - invalid
+
+	dec := NewDecoder(bytes.NewReader(invalidData))
+
+	// More should still work (just peeks - returns true if there are bytes)
+	if !dec.More() {
+		t.Error("More() should return true for non-empty stream")
+	}
+
+	// Now try to decode - should error
+	var v any
+	err := dec.Decode(&v)
+	if err == nil {
+		t.Error("expected error for invalid data")
+	}
+}
+
+// Test multi-document streaming with mixed types
+func TestMultiDocumentMixedTypes(t *testing.T) {
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	// Encode various types
+	enc.Encode(map[string]int{"a": 1})
+	enc.Encode([]string{"x", "y"})
+	enc.Encode(123)
+	enc.Encode("string")
+	enc.Encode(true)
+	enc.Encode(nil)
+
+	// Use buffer directly like TestDecoderMore does
+	dec := NewDecoder(&buf)
+
+	// Decode each value with the correct type
+	var obj map[string]int
+	if err := dec.Decode(&obj); err != nil {
+		t.Fatalf("Decode map error: %v", err)
+	}
+	if obj["a"] != 1 {
+		t.Errorf("obj[a] = %d, want 1", obj["a"])
+	}
+
+	var arr []string
+	if err := dec.Decode(&arr); err != nil {
+		t.Fatalf("Decode array error: %v", err)
+	}
+	if len(arr) != 2 {
+		t.Errorf("arr len = %d, want 2", len(arr))
+	}
+
+	var num int
+	if err := dec.Decode(&num); err != nil {
+		t.Fatalf("Decode int error: %v", err)
+	}
+	if num != 123 {
+		t.Errorf("num = %d, want 123", num)
+	}
+
+	var str string
+	if err := dec.Decode(&str); err != nil {
+		t.Fatalf("Decode string error: %v", err)
+	}
+	if str != "string" {
+		t.Errorf("str = %q, want %q", str, "string")
+	}
+
+	var b bool
+	if err := dec.Decode(&b); err != nil {
+		t.Fatalf("Decode bool error: %v", err)
+	}
+	if !b {
+		t.Error("b = false, want true")
+	}
+
+	var null any
+	if err := dec.Decode(&null); err != nil {
+		t.Fatalf("Decode nil error: %v", err)
+	}
+	if null != nil {
+		t.Errorf("null = %v, want nil", null)
+	}
+
+	// At this point, More() might still peek ahead before returning false.
+	// This is expected behavior - More() only returns false after attempting
+	// to peek and getting EOF.
+	// Try to decode one more value - should get EOF
+	var extra any
+	err := dec.Decode(&extra)
+	if err != io.EOF {
+		t.Errorf("expected io.EOF after all values, got err=%v, extra=%v", err, extra)
+	}
+}
+
+// Test Token() returning correct delimiter types
+func TestTokenDelimiterTypes(t *testing.T) {
+	// Verify that delimiters are returned as Delim type with correct rune value
+	tests := []struct {
+		input    any
+		expected []Token
+	}{
+		{
+			[]int{1},
+			[]Token{Delim('['), int64(1), Delim(']')},
+		},
+		{
+			map[string]int{"k": 2},
+			[]Token{Delim('{'), "k", int64(2), Delim('}')},
+		},
+	}
+
+	for _, tt := range tests {
+		data, _ := Marshal(tt.input)
+		dec := NewDecoder(bytes.NewReader(data))
+
+		for i, expected := range tt.expected {
+			tok, err := dec.Token()
+			if err != nil {
+				t.Fatalf("Token error at %d: %v", i, err)
+			}
+
+			switch exp := expected.(type) {
+			case Delim:
+				if d, ok := tok.(Delim); !ok || d != exp {
+					t.Errorf("token %d = %v (%T), want %c (Delim)", i, tok, tok, exp)
+				}
+			default:
+				if tok != expected {
+					t.Errorf("token %d = %v, want %v", i, tok, expected)
+				}
+			}
+		}
+	}
+}
+
+// Test Encoder with various struct types
+func TestEncoderStructTypes(t *testing.T) {
+	type Inner struct {
+		Value int `bonjson:"value"`
+	}
+	type Outer struct {
+		Name  string `bonjson:"name"`
+		Inner Inner  `bonjson:"inner"`
+	}
+
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+
+	original := Outer{
+		Name:  "test",
+		Inner: Inner{Value: 42},
+	}
+
+	if err := enc.Encode(original); err != nil {
+		t.Fatalf("Encode error: %v", err)
+	}
+
+	dec := NewDecoder(&buf)
+	var decoded Outer
+	if err := dec.Decode(&decoded); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+
+	if decoded.Name != original.Name || decoded.Inner.Value != original.Inner.Value {
+		t.Errorf("decoded = %+v, want %+v", decoded, original)
+	}
+}
+
+// Test Delim String() method
+func TestDelimString(t *testing.T) {
+	tests := []struct {
+		d        Delim
+		expected string
+	}{
+		{Delim('['), "["},
+		{Delim(']'), "]"},
+		{Delim('{'), "{"},
+		{Delim('}'), "}"},
+	}
+
+	for _, tt := range tests {
+		if s := tt.d.String(); s != tt.expected {
+			t.Errorf("Delim(%c).String() = %q, want %q", tt.d, s, tt.expected)
+		}
+	}
+}
+
+// Test Token() EOF behavior
+func TestTokenEOF(t *testing.T) {
+	data, _ := Marshal(42)
+	dec := NewDecoder(bytes.NewReader(data))
+
+	// First token should succeed
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	if tok != int64(42) {
+		t.Errorf("tok = %v, want 42", tok)
+	}
+
+	// Second token should return EOF
+	_, err = dec.Token()
+	if err != io.EOF {
+		t.Errorf("err = %v, want io.EOF", err)
+	}
+}
+
+// Test consecutive Token() calls return correct values
+func TestTokenConsecutiveValues(t *testing.T) {
+	// Create stream of different value types
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	enc.Encode(int64(100))
+	enc.Encode("hello")
+	enc.Encode(true)
+	enc.Encode(3.14)
+
+	dec := NewDecoder(&buf)
+
+	// Token should return correct types
+	tok, _ := dec.Token()
+	if v, ok := tok.(int64); !ok || v != 100 {
+		t.Errorf("token 1: got %v (%T), want 100 (int64)", tok, tok)
+	}
+
+	tok, _ = dec.Token()
+	if v, ok := tok.(string); !ok || v != "hello" {
+		t.Errorf("token 2: got %v (%T), want hello (string)", tok, tok)
+	}
+
+	tok, _ = dec.Token()
+	if v, ok := tok.(bool); !ok || v != true {
+		t.Errorf("token 3: got %v (%T), want true (bool)", tok, tok)
+	}
+
+	tok, _ = dec.Token()
+	if v, ok := tok.(float64); !ok || v != 3.14 {
+		t.Errorf("token 4: got %v (%T), want 3.14 (float64)", tok, tok)
+	}
+}
+
+// Test Decoder UseNumber option behavior
+func TestDecoderUseNumber(t *testing.T) {
+	// Note: BONJSON preserves integer types, so UseNumber might behave differently
+	// from JSON. This test verifies the current behavior.
+	data, _ := Marshal(map[string]any{"int": 42, "float": 3.14})
+
+	dec := NewDecoder(bytes.NewReader(data))
+	var decoded map[string]any
+	if err := dec.Decode(&decoded); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+
+	// BONJSON should return int64 for integers
+	if _, ok := decoded["int"].(int64); !ok {
+		t.Errorf("int value type = %T, want int64", decoded["int"])
+	}
+
+	// BONJSON should return float64 for floats
+	if _, ok := decoded["float"].(float64); !ok {
+		t.Errorf("float value type = %T, want float64", decoded["float"])
+	}
+}

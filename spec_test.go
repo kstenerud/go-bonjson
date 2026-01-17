@@ -311,7 +311,7 @@ func runDecodeErrorTest(t *testing.T, tc testCase) {
 }
 
 func hasDecoderOptions(opts map[string]interface{}) bool {
-	decoderOpts := []string{"allow_nul", "allow_nan_infinity", "max_depth", "max_string_length", "max_chunks"}
+	decoderOpts := []string{"allow_nul", "allow_nan_infinity", "nan_infinity", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_chunks"}
 	for _, opt := range decoderOpts {
 		if _, ok := opts[opt]; ok {
 			return true
@@ -428,6 +428,41 @@ func applyDecoderOptions(dec *Decoder, opts map[string]interface{}) {
 	}
 	if v, ok := opts["allow_nan_infinity"].(bool); ok && v {
 		dec.SetNaNInfinityMode(NaNInfAllow)
+	}
+	// Handle nan_infinity option (string mode: "allow", "stringify", "reject")
+	if v, ok := opts["nan_infinity"].(string); ok {
+		switch v {
+		case "allow":
+			dec.SetNaNInfinityMode(NaNInfAllow)
+		case "stringify":
+			dec.SetNaNInfinityMode(NaNInfStringify)
+		case "reject":
+			dec.SetNaNInfinityMode(NaNInfReject)
+		}
+	}
+	// Handle duplicate_key option (string mode: "keep_first", "keep_last", "reject")
+	if v, ok := opts["duplicate_key"].(string); ok {
+		switch v {
+		case "keep_first":
+			dec.SetDuplicateKeyMode(DupKeyKeepFirst)
+		case "keep_last":
+			dec.SetDuplicateKeyMode(DupKeyKeepLast)
+		case "reject":
+			dec.SetDuplicateKeyMode(DupKeyReject)
+		}
+	}
+	// Handle invalid_utf8 option (string mode: "replace", "delete", "ignore", "reject")
+	if v, ok := opts["invalid_utf8"].(string); ok {
+		switch v {
+		case "replace":
+			dec.SetInvalidUTF8Mode(UTF8Replace)
+		case "delete":
+			dec.SetInvalidUTF8Mode(UTF8Delete)
+		case "ignore":
+			dec.SetInvalidUTF8Mode(UTF8Ignore)
+		case "reject":
+			dec.SetInvalidUTF8Mode(UTF8Reject)
+		}
 	}
 	if v, ok := opts["max_depth"]; ok {
 		if depth, ok := toInt(v); ok {
