@@ -2567,6 +2567,106 @@ func TestCaseFoldingCompatibility(t *testing.T) {
 	}
 }
 
+// TestUnicodeCaseFolding tests case-folding for non-ASCII characters
+func TestUnicodeCaseFolding(t *testing.T) {
+	// Test Unicode field name case folding
+	t.Run("unicode_latin_extended", func(t *testing.T) {
+		// Test Ñ/ñ folding (common in Spanish)
+		type S struct {
+			Niño string `bonjson:"niño"`
+		}
+
+		// Create data with uppercase Ñ
+		data, _ := Marshal(map[string]string{"niÑo": "value"})
+
+		var s S
+		err := Unmarshal(data, &s)
+		if err != nil {
+			t.Fatalf("Unmarshal error: %v", err)
+		}
+		// SimpleFold should match these
+		if s.Niño != "value" {
+			t.Errorf("expected Niño = %q, got %q", "value", s.Niño)
+		}
+	})
+
+	t.Run("unicode_greek", func(t *testing.T) {
+		// Test Greek letters
+		type S struct {
+			Alpha string `bonjson:"α"`
+		}
+
+		// Create data with uppercase alpha
+		data, _ := Marshal(map[string]string{"Α": "value"})
+
+		var s S
+		err := Unmarshal(data, &s)
+		if err != nil {
+			t.Fatalf("Unmarshal error: %v", err)
+		}
+		if s.Alpha != "value" {
+			t.Errorf("expected Alpha = %q, got %q", "value", s.Alpha)
+		}
+	})
+
+	t.Run("unicode_cyrillic", func(t *testing.T) {
+		// Test Cyrillic letters (А/а)
+		type S struct {
+			Field string `bonjson:"а"` // Cyrillic 'a'
+		}
+
+		data, _ := Marshal(map[string]string{"А": "value"}) // Uppercase Cyrillic A
+
+		var s S
+		err := Unmarshal(data, &s)
+		if err != nil {
+			t.Fatalf("Unmarshal error: %v", err)
+		}
+		if s.Field != "value" {
+			t.Errorf("expected field = %q, got %q", "value", s.Field)
+		}
+	})
+
+	t.Run("mixed_ascii_unicode", func(t *testing.T) {
+		// Test field with mixed ASCII and Unicode
+		type S struct {
+			Café string `bonjson:"café"`
+		}
+
+		data, _ := Marshal(map[string]string{"CAFÉ": "value"})
+
+		var s S
+		err := Unmarshal(data, &s)
+		if err != nil {
+			t.Fatalf("Unmarshal error: %v", err)
+		}
+		if s.Café != "value" {
+			t.Errorf("expected Café = %q, got %q", "value", s.Café)
+		}
+	})
+
+	t.Run("ascii_numbers_in_field", func(t *testing.T) {
+		// Numbers should not affect case folding
+		type S struct {
+			Field1 string
+		}
+
+		tests := []string{"field1", "FIELD1", "Field1", "fIeLd1"}
+		for _, name := range tests {
+			t.Run(name, func(t *testing.T) {
+				data, _ := Marshal(map[string]string{name: "value"})
+				var s S
+				if err := Unmarshal(data, &s); err != nil {
+					t.Fatalf("Unmarshal error: %v", err)
+				}
+				if s.Field1 != "value" {
+					t.Errorf("key %q: expected Field1 = %q, got %q", name, "value", s.Field1)
+				}
+			})
+		}
+	})
+}
+
 // TestUnmarshalerPriorityCompatibility verifies unmarshaler interface priority
 func TestUnmarshalerPriorityCompatibility(t *testing.T) {
 	// BONJSON's UnmarshalBONJSON should take priority over TextUnmarshaler

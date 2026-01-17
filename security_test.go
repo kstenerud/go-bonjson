@@ -1110,3 +1110,171 @@ func TestDisallowUnknownFieldsCombined(t *testing.T) {
 		}
 	})
 }
+
+// Test Valid() with security-relevant data
+func TestValidWithSecurityData(t *testing.T) {
+	t.Run("nan_invalid_by_default", func(t *testing.T) {
+		// NaN in BigNumber format: 0x69 (BigNumber) + 0x02 (sigLen=0, expLen=0, special=NaN)
+		// Actually, NaN is sigLen=0, expLen=0, negative=0, with header indicating NaN
+		// Header byte: [sig_len:5][exp_len:2][negative:1]
+		// For NaN: sigLen=0, but need to check special value encoding
+		// Let's use float64 NaN: 0x6c + 8 bytes of NaN
+		nanBytes := []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x7f}
+		if Valid(nanBytes) {
+			t.Error("Valid should return false for NaN by default")
+		}
+	})
+
+	t.Run("infinity_invalid_by_default", func(t *testing.T) {
+		// Positive infinity: 0x6c + 8 bytes
+		infBytes := []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x7f}
+		if Valid(infBytes) {
+			t.Error("Valid should return false for Infinity by default")
+		}
+	})
+
+	t.Run("duplicate_keys_invalid_by_default", func(t *testing.T) {
+		// Object with duplicate keys: {"a": 1, "a": 2}
+		// 0x9a (object start) + "a":1 + "a":2 + 0x9b (end)
+		dupKeyData := []byte{
+			typeObjectStart,
+			typeShortStringBase + 1, 'a', 0x01, // "a": 1
+			typeShortStringBase + 1, 'a', 0x02, // "a": 2
+			typeContainerEnd,
+		}
+		if Valid(dupKeyData) {
+			t.Error("Valid should return false for duplicate keys by default")
+		}
+	})
+
+	t.Run("deeply_nested_valid", func(t *testing.T) {
+		// Deep nesting but within limits
+		var buf bytes.Buffer
+		for i := 0; i < 100; i++ {
+			buf.WriteByte(typeArrayStart)
+		}
+		buf.WriteByte(typeNull)
+		for i := 0; i < 100; i++ {
+			buf.WriteByte(typeContainerEnd)
+		}
+		if !Valid(buf.Bytes()) {
+			t.Error("Valid should return true for deeply nested but valid data")
+		}
+	})
+
+	t.Run("nul_invalid_by_default", func(t *testing.T) {
+		// String containing NUL
+		nulData := []byte{typeShortStringBase + 3, 'a', 0x00, 'b'}
+		if Valid(nulData) {
+			t.Error("Valid should return false for NUL in string by default")
+		}
+	})
+}
+
+// Test Token() with security configuration modes
+func TestTokenWithSecurityModes(t *testing.T) {
+	t.Run("token_with_nan_allow", func(t *testing.T) {
+		// Encode NaN with allow mode
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.SetNaNInfinityMode(NaNInfAllow)
+		enc.Encode(math.NaN())
+
+		dec := NewDecoder(&buf)
+		dec.SetNaNInfinityMode(NaNInfAllow)
+
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("Token error: %v", err)
+		}
+		if f, ok := tok.(float64); !ok || !math.IsNaN(f) {
+			t.Errorf("expected NaN float64, got %v (%T)", tok, tok)
+		}
+	})
+
+	t.Run("token_with_nan_stringify", func(t *testing.T) {
+		// Encode NaN with stringify mode - should come back as string
+		var buf bytes.Buffer
+		enc := NewEncoder(&buf)
+		enc.SetNaNInfinityMode(NaNInfStringify)
+		enc.Encode(math.NaN())
+
+		dec := NewDecoder(&buf)
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("Token error: %v", err)
+		}
+		if s, ok := tok.(string); !ok || s != "NaN" {
+			t.Errorf("expected string \"NaN\", got %v (%T)", tok, tok)
+		}
+	})
+
+	t.Run("token_returns_raw_strings", func(t *testing.T) {
+		// Token() is a lower-level API that returns raw strings
+		// without UTF-8 processing. This test verifies that behavior.
+		data := []byte{
+			typeObjectStart,
+			typeShortStringBase + 2, 0x80, 'a', // Invalid UTF-8 key
+			0x01,            // value 1
+			typeContainerEnd,
+		}
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.SetInvalidUTF8Mode(UTF8Replace) // This won't affect Token()
+
+		// Read object start
+		tok, _ := dec.Token()
+		if _, ok := tok.(Delim); !ok {
+			t.Fatalf("expected Delim, got %T", tok)
+		}
+
+		// Read key - Token() returns raw bytes as string without UTF-8 processing
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("Token error for key: %v", err)
+		}
+		if s, ok := tok.(string); !ok {
+			t.Errorf("expected string key, got %v (%T)", tok, tok)
+		} else if s != "\x80a" {
+			// Token() returns raw string, not replaced
+			t.Errorf("expected raw string \"\\x80a\", got %q", s)
+		}
+	})
+
+	t.Run("token_in_array_with_all_modes", func(t *testing.T) {
+		// Create array with valid data
+		data, _ := Marshal([]any{1, "hello", true})
+
+		dec := NewDecoder(bytes.NewReader(data))
+		dec.AllowNUL()
+		dec.SetInvalidUTF8Mode(UTF8Ignore)
+		dec.SetDuplicateKeyMode(DupKeyKeepLast)
+		dec.SetNaNInfinityMode(NaNInfAllow)
+
+		// Should still work normally
+		tok, _ := dec.Token() // [
+		if d, ok := tok.(Delim); !ok || d != '[' {
+			t.Errorf("expected '[', got %v", tok)
+		}
+
+		tok, _ = dec.Token() // 1
+		if v, ok := tok.(int64); !ok || v != 1 {
+			t.Errorf("expected 1, got %v (%T)", tok, tok)
+		}
+
+		tok, _ = dec.Token() // "hello"
+		if s, ok := tok.(string); !ok || s != "hello" {
+			t.Errorf("expected \"hello\", got %v", tok)
+		}
+
+		tok, _ = dec.Token() // true
+		if b, ok := tok.(bool); !ok || !b {
+			t.Errorf("expected true, got %v", tok)
+		}
+
+		tok, _ = dec.Token() // ]
+		if d, ok := tok.(Delim); !ok || d != ']' {
+			t.Errorf("expected ']', got %v", tok)
+		}
+	})
+}
