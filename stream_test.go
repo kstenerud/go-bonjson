@@ -1084,7 +1084,8 @@ func TestTokenAllTypes(t *testing.T) {
 		{"false", false, "bool"},
 		{"small_int", int64(42), "int64"},
 		{"small_neg_int", int64(-42), "int64"},
-		{"large_uint", uint64(1 << 62), "uint64"},
+		{"large_int", uint64(1 << 62), "int64"},        // Fits in int64, encoded as signed per spec
+		{"large_uint", uint64(1<<63 + 1000), "uint64"}, // Exceeds int64, must be unsigned
 		{"float", 3.14, "float64"},
 		{"string", "hello", "string"},
 	}

@@ -34,6 +34,7 @@ type testCase struct {
 	ExpectedValue interface{}            `json:"expected_value"`
 	ExpectedError string                 `json:"expected_error"`
 	Options       map[string]interface{} `json:"options"`
+	Requires      []string               `json:"requires"`
 }
 
 // configFile represents a test configuration file
@@ -48,6 +49,23 @@ type configSource struct {
 	Path      string `json:"path"`
 	Skip      bool   `json:"skip"`
 	Recursive bool   `json:"recursive"`
+}
+
+// supportedCapabilities defines which test capabilities this implementation supports.
+// Tests requiring capabilities not in this set will be skipped.
+var supportedCapabilities = map[string]bool{
+	// Supported: Arbitrary precision BigNumber (>17 significant digits)
+	// When decoding to interface{}, go-bonjson uses *big.Int or *big.Float
+	// when primitives would lose precision.
+	"arbitrary_precision_bignumber": true,
+
+	// Supported: BigNumber exponents outside int8 range (-128 to 127)
+	// go-bonjson supports 1-3 byte exponents (up to int24 range)
+	"bignumber_exponent_gt_127":    true,
+	"bignumber_exponent_lt_neg128": true,
+
+	// Supported: Converting NaN/Infinity to string representations during decoding
+	"nan_infinity_stringify": true,
 }
 
 func TestBONJSONSpec(t *testing.T) {
@@ -143,6 +161,10 @@ func processTestFile(t *testing.T, path string) {
 	fileName := filepath.Base(path)
 	t.Run(fileName, func(t *testing.T) {
 		for _, tc := range tf.Tests {
+			// Skip comment-only entries (no name or type)
+			if tc.Name == "" && tc.Type == "" {
+				continue
+			}
 			tc := tc // capture for parallel
 			t.Run(tc.Name, func(t *testing.T) {
 				runTestCase(t, tc)
@@ -152,6 +174,13 @@ func processTestFile(t *testing.T, path string) {
 }
 
 func runTestCase(t *testing.T, tc testCase) {
+	// Check for required capabilities
+	for _, cap := range tc.Requires {
+		if !supportedCapabilities[cap] {
+			t.Skipf("Requires unsupported capability: %s", cap)
+		}
+	}
+
 	switch strings.ToLower(tc.Type) {
 	case "encode":
 		runEncodeTest(t, tc)

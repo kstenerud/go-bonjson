@@ -209,18 +209,21 @@ dec.SetMaxChunks(200)                // 200 chunks max per string (default 100)
 
 BONJSON preserves numeric types more precisely than JSON:
 
-| BONJSON          | Go (when decoding to `interface{}`) |
-|------------------|-------------------------------------|
-| null             | nil                                 |
-| bool             | bool                                |
-| signed integer   | int64                               |
-| unsigned integer | uint64                              |
-| float            | float64                             |
-| string           | string                              |
-| array            | []any                               |
-| object           | map[string]any                      |
+| BONJSON          | Go (when decoding to `interface{}`)                   |
+|------------------|-------------------------------------------------------|
+| null             | nil                                                   |
+| bool             | bool                                                  |
+| signed integer   | int64                                                 |
+| unsigned integer | uint64                                                |
+| float            | float64                                               |
+| BigNumber        | int64, uint64, float64, *big.Int, or *big.Float       |
+| string           | string                                                |
+| array            | []any                                                 |
+| object           | map[string]any                                        |
 
-BONJSON stores numbers in their native binary format, which means that `Decoder.UseNumber()` is not needed—when decoding to `interface{}`. You get the correct and precise type automatically: `int64` for signed integers, `uint64` for unsigned integers, and `float64` for floats.
+BONJSON stores numbers in their native binary format, which means that `Decoder.UseNumber()` is not needed when decoding to `interface{}`. You get the correct and precise type automatically: `int64` for signed integers, `uint64` for unsigned integers, and `float64` for floats.
+
+BigNumber values are decoded to the smallest type that can represent them without precision loss: primitives (`int64`, `uint64`, `float64`) when possible, otherwise `*big.Int` for large integers or `*big.Float` for high-precision decimals.
 
 ## Additional Features
 

@@ -714,26 +714,143 @@ func (d *decodeState) storeBigNumber(bn *BigNumber, origV reflect.Value, pv refl
 	// Use pv for generic handling
 	v := pv
 
-	// Convert BigNumber to string representation and parse
-	// This is a simplification - a full implementation would handle this more efficiently
+	// Convert BigNumber to the most appropriate Go type
+	goValue := bigNumberToGoValue(bn)
+
+	// Store based on the resulting type
+	switch val := goValue.(type) {
+	case int64:
+		return d.storeInt(val, v, ut)
+	case uint64:
+		return d.storeUint(val, v, ut)
+	case float64:
+		return d.storeFloat(val, v, ut)
+	case *big.Int:
+		// For interface{}, store the *big.Int directly
+		if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
+			v.Set(reflect.ValueOf(val))
+			return nil
+		}
+		// For other types, convert to string and use TextUnmarshaler if available
+		if ut != nil {
+			return ut.UnmarshalText([]byte(val.String()))
+		}
+		// Try to fit into the target numeric type
+		if v.CanInt() {
+			if val.IsInt64() {
+				v.SetInt(val.Int64())
+				return nil
+			}
+			return &ValueRangeError{Value: val.String(), Offset: int64(d.offsetIntoData)}
+		}
+		if v.CanUint() {
+			if val.IsUint64() {
+				v.SetUint(val.Uint64())
+				return nil
+			}
+			return &ValueRangeError{Value: val.String(), Offset: int64(d.offsetIntoData)}
+		}
+		return &ValueRangeError{Value: val.String(), Offset: int64(d.offsetIntoData)}
+	case *big.Float:
+		// For interface{}, store the *big.Float directly
+		if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
+			v.Set(reflect.ValueOf(val))
+			return nil
+		}
+		// For other types, convert to float64 (may lose precision)
+		f, _ := val.Float64()
+		return d.storeFloat(f, v, ut)
+	default:
+		return d.storeInt(0, v, ut) // Zero case
+	}
+}
+
+// bigNumberToGoValue converts a BigNumber to the most appropriate Go type.
+// It tries primitives first (int64, uint64, float64), falling back to
+// *big.Int or *big.Float only when the value doesn't fit or would lose precision.
+func bigNumberToGoValue(bn *BigNumber) interface{} {
+	// Zero case
 	if len(bn.Significand) == 0 {
-		// Zero
-		return d.storeInt(0, v, ut)
+		if bn.Negative {
+			return int64(0) // -0 as integer
+		}
+		return int64(0)
 	}
 
-	// Build the significand value using the helper function
-	sig := readLittleEndianUint64(bn.Significand, len(bn.Significand))
+	// Convert significand from little-endian to big.Int
+	bigEndian := slices.Clone(bn.Significand)
+	slices.Reverse(bigEndian)
+	sigInt := new(big.Int).SetBytes(bigEndian)
 
-	// For now, convert to float64 (a proper implementation would handle arbitrary precision)
-	f := float64(sig)
+	if bn.Exponent >= 0 {
+		// Integer result: significand * 10^exponent
+		if bn.Exponent > 0 {
+			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(bn.Exponent)), nil)
+			sigInt.Mul(sigInt, multiplier)
+		}
+
+		// Apply sign
+		if bn.Negative {
+			sigInt.Neg(sigInt)
+		}
+
+		// Try to fit in int64
+		if sigInt.IsInt64() {
+			return sigInt.Int64()
+		}
+		// Try to fit in uint64 (only for non-negative)
+		if !bn.Negative && sigInt.IsUint64() {
+			return sigInt.Uint64()
+		}
+		// Must use *big.Int
+		return sigInt
+	}
+
+	// Negative exponent: might be a decimal
+	// First check if it divides evenly (result is still an integer)
+	divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-bn.Exponent)), nil)
+	quotient := new(big.Int)
+	remainder := new(big.Int)
+	quotient.DivMod(sigInt, divisor, remainder)
+
+	if remainder.Sign() == 0 {
+		// Divides evenly - result is an integer
+		if bn.Negative {
+			quotient.Neg(quotient)
+		}
+		if quotient.IsInt64() {
+			return quotient.Int64()
+		}
+		if !bn.Negative && quotient.IsUint64() {
+			return quotient.Uint64()
+		}
+		return quotient
+	}
+
+	// Result is a decimal - try float64 first
+	// Convert to big.Float for precise calculation
+	sigFloat := new(big.Float).SetInt(sigInt)
+	divisorFloat := new(big.Float).SetInt(divisor)
+	result := new(big.Float).Quo(sigFloat, divisorFloat)
 	if bn.Negative {
-		f = -f
+		result.Neg(result)
 	}
-	if bn.Exponent != 0 {
-		// Apply base-10 exponent using math.Pow10 (much faster than loop)
-		f *= math.Pow10(int(bn.Exponent))
+
+	// Check if float64 can represent this value without precision loss
+	f64, accuracy := result.Float64()
+	if accuracy == big.Exact {
+		return f64
 	}
-	return d.storeFloat(f, v, ut)
+
+	// Check if round-tripping through float64 preserves the value
+	// This catches cases where the value fits in float64's range and precision
+	roundTrip := new(big.Float).SetFloat64(f64)
+	if result.Cmp(roundTrip) == 0 {
+		return f64
+	}
+
+	// Must use *big.Float for full precision
+	return result
 }
 
 // storeBigNumberToBigInt converts a BigNumber to a *big.Int with full precision.

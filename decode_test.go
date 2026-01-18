@@ -751,14 +751,25 @@ func TestNativeNumericTypes(t *testing.T) {
 		t.Errorf("signed int: expected int64, got %T", v1)
 	}
 
-	// Large unsigned integer decodes to uint64
+	// Large positive integer that fits in int64 decodes to int64
+	// (Per spec: prefer signed encoding when same byte count)
 	data2, _ := Marshal(uint64(1 << 62))
 	var v2 any
 	if err := Unmarshal(data2, &v2); err != nil {
 		t.Fatalf("Unmarshal error: %v", err)
 	}
-	if _, ok := v2.(uint64); !ok {
-		t.Errorf("unsigned int: expected uint64, got %T", v2)
+	if _, ok := v2.(int64); !ok {
+		t.Errorf("large positive int: expected int64, got %T", v2)
+	}
+
+	// Value > max int64 decodes to uint64 (requires unsigned encoding)
+	data2b, _ := Marshal(uint64(1<<63 + 1000))
+	var v2b any
+	if err := Unmarshal(data2b, &v2b); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if _, ok := v2b.(uint64); !ok {
+		t.Errorf("unsigned int > max int64: expected uint64, got %T", v2b)
 	}
 
 	// Float decodes to float64

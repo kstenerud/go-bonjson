@@ -218,6 +218,8 @@ func encodeSignedInt(dst []byte, v int64) int {
 }
 
 // encodeUnsignedInt encodes an unsigned integer using the minimum bytes needed.
+// Per BONJSON spec: "Encoders SHOULD favor signed over unsigned when both
+// types would encode a value into the same number of bytes."
 // Returns the number of bytes written (1 for type code + n for value).
 func encodeUnsignedInt(dst []byte, v uint64) int {
 	// Try small int first (0-100)
@@ -226,11 +228,21 @@ func encodeUnsignedInt(dst []byte, v uint64) int {
 		return 1
 	}
 
-	// Calculate required bytes: (position of highest bit + 7) / 8
-	// bits.Len64 returns bit length (1-64), divide by 8 rounding up
+	// Calculate required bytes for unsigned: ceil(bits / 8)
 	n := (bits.Len64(v) + 7) / 8
 
-	dst[0] = typeUintBase | byte(n-1)
+	// Check if signed encoding would use the same number of bytes.
+	// Signed needs the high bit to be 0 (for positive sign), so if
+	// v < 2^(n*8-1), both encodings use n bytes. Prefer signed per spec.
+	signedThreshold := uint64(1) << (n*8 - 1)
+	if v < signedThreshold {
+		// Value fits in signed representation with same byte count
+		dst[0] = typeSintBase | byte(n-1)
+	} else {
+		// Need unsigned to avoid extra byte for sign
+		dst[0] = typeUintBase | byte(n-1)
+	}
+
 	// Write as little-endian using single store
 	binary.LittleEndian.PutUint64(dst[1:], v)
 	return 1 + n
@@ -609,8 +621,13 @@ func canUseFloat32(v float64) bool {
 }
 
 // canUseInteger checks if a float64 is actually an integer value.
+// Returns false for negative zero to preserve the sign bit.
 func canUseInteger(v float64) (int64, bool) {
 	if v != v || math.IsInf(v, 0) { // NaN or Inf
+		return 0, false
+	}
+	// Negative zero must be encoded as float to preserve sign
+	if v == 0 && math.Signbit(v) {
 		return 0, false
 	}
 	i := int64(v)

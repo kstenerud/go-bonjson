@@ -320,8 +320,18 @@ Special numeric values use the `$number` marker:
 ### Encoding Differences
 
 go-bonjson makes valid encoding choices that may differ from test expectations:
-- **Integer encoding**: Always uses signed integer type codes (`0x78-0x7f`) even for positive values. The spec allows either signed or unsigned encodings.
 - **Error types**: Reports `truncated` instead of `unclosed_container` when data ends unexpectedly (both indicate the same underlying problem).
+
+### Capability Flags
+
+Some tests require capabilities not all implementations support. Tests declare required capabilities via the `requires` field. The test runner skips tests requiring unsupported capabilities.
+
+| Capability | Supported | Notes |
+|------------|-----------|-------|
+| `arbitrary_precision_bignumber` | Yes | BigNumber with >17 significant digits. When decoding to `interface{}`, go-bonjson uses `*big.Int` or `*big.Float` when primitives would lose precision. |
+| `bignumber_exponent_gt_127` | Yes | BigNumber exponents > 127 (uses 2-3 byte exponent encoding) |
+| `bignumber_exponent_lt_neg128` | Yes | BigNumber exponents < -128 (uses 2-3 byte exponent encoding) |
+| `nan_infinity_stringify` | Yes | Converting NaN/Infinity to string representations (`NaNInfStringify` mode) |
 
 
 ## Potential Improvements

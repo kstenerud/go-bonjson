@@ -656,7 +656,7 @@ func TestEncodeNumberOptimalFormat(t *testing.T) {
 	}{
 		{"small_int_zero", 0, 0x00, 1},
 		{"small_int_100", 100, 0x64, 1},
-		{"uint_101", 101, typeUintBase, 2},
+		{"sint_101", 101, typeSintBase, 2}, // Prefer signed per spec when same size
 		{"small_neg_minus1", -1, 0xFF, 1},
 		{"small_neg_minus100", -100, 0x9C, 1},
 		{"sint_minus101", -101, typeSintBase, 2},
