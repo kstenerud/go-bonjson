@@ -27,6 +27,7 @@ package bonjson
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -406,10 +407,11 @@ func TestAttack_StringChunkingBomb(t *testing.T) {
 
 func TestAttack_DeepNestingArrays(t *testing.T) {
 	// Create arrays nested to various depths
-	depths := []int{100, 500, 1000, 1001, 2000}
+	// Default max depth per BONJSON spec is 512
+	depths := []int{100, 500, 512, 513, 1000}
 
 	for _, depth := range depths {
-		t.Run("depth_"+string(rune('0'+depth/1000))+string(rune('0'+(depth%1000)/100))+string(rune('0'+(depth%100)/10))+string(rune('0'+depth%10)), func(t *testing.T) {
+		t.Run(fmt.Sprintf("depth_%04d", depth), func(t *testing.T) {
 			var buf bytes.Buffer
 			for i := 0; i < depth; i++ {
 				buf.WriteByte(typeArrayStart)
@@ -422,13 +424,13 @@ func TestAttack_DeepNestingArrays(t *testing.T) {
 			var v any
 			err := Unmarshal(buf.Bytes(), &v)
 
-			if depth > 1000 {
-				// Should fail for depths > default max (1000)
+			if depth > 512 {
+				// Should fail for depths > default max (512 per BONJSON spec)
 				if err == nil {
 					t.Errorf("expected error for depth %d", depth)
 				}
 			} else {
-				// Should succeed for depths <= 1000
+				// Should succeed for depths <= 512
 				if err != nil {
 					t.Errorf("unexpected error for depth %d: %v", depth, err)
 				}

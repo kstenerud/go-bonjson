@@ -93,8 +93,11 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 - **NaN/Infinity**: Rejected in float decoders and BigNumber special values
 
 ### Configurable Limits (on Decoder)
-- `SetMaxStringLength(n)` - default 10 MB
-- `SetMaxDepth(n)` - default 1000
+All defaults follow the BONJSON spec "Resource Limits" table:
+- `SetMaxDocumentSize(n)` - default 2 GB (2,000,000,000 bytes)
+- `SetMaxDepth(n)` - default 512
+- `SetMaxContainerSize(n)` - default 1,000,000 elements
+- `SetMaxStringLength(n)` - default 10 MB (10,000,000 bytes)
 - `SetMaxChunks(n)` - default 100
 - `AllowNUL()` - allow NUL characters in strings
 - `DisallowUnknownFields()` - reject unknown struct fields
@@ -289,6 +292,8 @@ go run ./cmd/bonjson-test/ -v testdata/sample-tests.json
 | `max_depth` | Maximum container nesting depth |
 | `max_string_length` | Maximum string length in bytes |
 | `max_chunks` | Maximum string chunks |
+| `max_container_size` | Maximum elements per container |
+| `max_document_size` | Maximum document size in bytes |
 
 ### Error Type Mapping
 
@@ -307,6 +312,8 @@ The runner maps bonjson errors to standardized error types:
 | `too_many_chunks` | `TooManyChunksError` |
 | `empty_chunk_continuation` | `EmptyChunkContinuationError` |
 | `max_depth_exceeded` | `MaxDepthError` |
+| `max_container_size_exceeded` | `MaxContainerSizeError` |
+| `max_document_size_exceeded` | `MaxDocumentSizeError` |
 
 ### $number Marker
 

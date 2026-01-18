@@ -100,11 +100,13 @@ const (
 )
 
 // Security limits (configurable via options)
+// Defaults per BONJSON spec "Resource Limits" table
 const (
-	defaultMaxStringLength   = 10 * 1024 * 1024 // 10 MB
-	defaultMaxContainerDepth = 1000
-	defaultMaxObjectKeys     = 100000
-	defaultMaxChunks         = 100 // Max chunks per string value
+	defaultMaxDocumentSize   = 2_000_000_000     // 2 GB
+	defaultMaxContainerDepth = 512              // Nesting depth
+	defaultMaxContainerSize  = 1_000_000        // Elements per container
+	defaultMaxStringLength   = 10_000_000       // 10 MB per string
+	defaultMaxChunks         = 100              // Chunks per string
 )
 
 // InvalidUTF8Mode controls how the decoder handles invalid UTF-8 byte sequences.

@@ -66,7 +66,9 @@ func Unmarshal(data []byte, v any) error {
 	d := newDecodeState()
 	defer decodeStatePool.Put(d)
 
-	d.init(data)
+	if err := d.init(data); err != nil {
+		return err
+	}
 	return d.unmarshal(v)
 }
 
@@ -117,7 +119,9 @@ func UnmarshalWithByteCount(data []byte, v any) (int, error) {
 	d := newDecodeState()
 	defer decodeStatePool.Put(d)
 
-	d.init(data)
+	if err := d.init(data); err != nil {
+		return 0, err
+	}
 	err := d.unmarshal(v)
 	return d.offsetIntoData, err
 }
@@ -134,14 +138,16 @@ type decodeState struct {
 	offsetIntoData int
 	containerDepth int
 
-	disallowUnknownFields    bool
-	allowNUL                 bool
-	nanInfMode               NaNInfinityMode
-	invalidUTF8Mode          InvalidUTF8Mode
-	duplicateKeyMode         DuplicateKeyMode
-	maxAllowedChunks         int
-	maxAllowedStringLength   int64
-	maxAllowedContainerDepth int
+	disallowUnknownFields     bool
+	allowNUL                  bool
+	nanInfMode                NaNInfinityMode
+	invalidUTF8Mode           InvalidUTF8Mode
+	duplicateKeyMode          DuplicateKeyMode
+	maxAllowedChunks          int
+	maxAllowedStringLength    int64
+	maxAllowedContainerDepth  int
+	maxAllowedContainerSize   int
+	maxAllowedDocumentSize    int64
 
 	// Stack of boolean slices for duplicate key detection in nested structs.
 	// Using field indices is more efficient than map lookups for structs.
@@ -168,6 +174,8 @@ func newDecodeState() *decodeState {
 	d.duplicateKeyMode = DupKeyReject
 	d.maxAllowedStringLength = defaultMaxStringLength
 	d.maxAllowedContainerDepth = defaultMaxContainerDepth
+	d.maxAllowedContainerSize = defaultMaxContainerSize
+	d.maxAllowedDocumentSize = defaultMaxDocumentSize
 	d.containerDepth = 0
 	d.seenStructFieldsDepth = 0
 	return d
@@ -212,10 +220,15 @@ func (d *decodeState) exitContainer() {
 	d.containerDepth--
 }
 
-func (d *decodeState) init(data []byte) {
+func (d *decodeState) init(data []byte) error {
+	// Check document size limit
+	if d.maxAllowedDocumentSize > 0 && int64(len(data)) > d.maxAllowedDocumentSize {
+		return &MaxDocumentSizeError{Size: int64(len(data)), Max: d.maxAllowedDocumentSize, Offset: 0}
+	}
 	d.data = data
 	d.offsetIntoData = 0
 	d.savedError = nil
+	return nil
 }
 
 // handleNaNInf checks for NaN/Infinity and handles according to the configured mode.
@@ -1192,6 +1205,11 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 			break
 		}
 
+		// Check container size limit before adding element
+		if d.maxAllowedContainerSize > 0 && i >= d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: i + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+		}
+
 		// Expand slice if necessary
 		if isSlice {
 			if i >= v.Cap() {
@@ -1289,6 +1307,7 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 
 	elemType := t.Elem()
 	mapElem := reflect.New(elemType).Elem()
+	count := 0
 
 	for {
 		tc, err := d.peekByte()
@@ -1304,6 +1323,11 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 		if tc == typeContainerEnd {
 			d.offsetIntoData++
 			break
+		}
+
+		// Check container size limit before adding key-value pair
+		if d.maxAllowedContainerSize > 0 && count >= d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: count + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
 		}
 
 		// Read key (must be a string)
@@ -1351,6 +1375,7 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 		if kv.IsValid() {
 			v.SetMapIndex(kv, mapElem)
 		}
+		count++
 	}
 	return nil
 }
@@ -1392,6 +1417,7 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 	fields := cachedTypeFields(v.Type())
 	seenFields := d.pushSeenStructFields(fields.fieldCount)
 	defer d.popSeenStructFields()
+	count := 0
 
 	for {
 		tc, err := d.peekByte()
@@ -1407,6 +1433,11 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 		if tc == typeContainerEnd {
 			d.offsetIntoData++
 			break
+		}
+
+		// Check container size limit before adding key-value pair
+		if d.maxAllowedContainerSize > 0 && count >= d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: count + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
 		}
 
 		// Read key (must be a string)
@@ -1430,6 +1461,7 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 		if err := d.decodeValue(fieldValue); err != nil {
 			return err
 		}
+		count++
 	}
 	return nil
 }
@@ -1624,6 +1656,12 @@ func (d *decodeState) arrayInterface() []any {
 			break
 		}
 
+		// Check container size limit before adding element
+		if d.maxAllowedContainerSize > 0 && len(v) >= d.maxAllowedContainerSize {
+			d.saveError(&MaxContainerSizeError{Size: len(v) + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
+			return v
+		}
+
 		var elem any
 		ev := reflect.ValueOf(&elem).Elem()
 		if err := d.decodeValue(ev); err != nil {
@@ -1655,6 +1693,12 @@ func (d *decodeState) objectInterface() map[string]any {
 		if tc == typeContainerEnd {
 			d.offsetIntoData++
 			break
+		}
+
+		// Check container size limit before adding key-value pair
+		if d.maxAllowedContainerSize > 0 && len(m) >= d.maxAllowedContainerSize {
+			d.saveError(&MaxContainerSizeError{Size: len(m) + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
+			return m
 		}
 
 		keyStart := d.offsetIntoData

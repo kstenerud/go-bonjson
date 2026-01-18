@@ -289,16 +289,6 @@ func runEncodeErrorTest(t *testing.T, tc testCase) {
 }
 
 func runDecodeErrorTest(t *testing.T, tc testCase) {
-	// Check for unimplemented options
-	if tc.Options != nil {
-		if _, ok := tc.Options["max_container_size"]; ok {
-			t.Skip("max_container_size option not implemented")
-		}
-		if _, ok := tc.Options["max_document_size"]; ok {
-			t.Skip("max_document_size option not implemented")
-		}
-	}
-
 	inputBytes, err := parseHexBytes(tc.InputBytes)
 	if err != nil {
 		t.Fatalf("Failed to parse input bytes: %v", err)
@@ -340,7 +330,7 @@ func runDecodeErrorTest(t *testing.T, tc testCase) {
 }
 
 func hasDecoderOptions(opts map[string]interface{}) bool {
-	decoderOpts := []string{"allow_nul", "allow_nan_infinity", "nan_infinity", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_chunks"}
+	decoderOpts := []string{"allow_nul", "allow_nan_infinity", "nan_infinity", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_chunks", "max_container_size", "max_document_size"}
 	for _, opt := range decoderOpts {
 		if _, ok := opts[opt]; ok {
 			return true
@@ -506,6 +496,16 @@ func applyDecoderOptions(dec *Decoder, opts map[string]interface{}) {
 	if v, ok := opts["max_chunks"]; ok {
 		if chunks, ok := toInt(v); ok {
 			dec.SetMaxChunks(chunks)
+		}
+	}
+	if v, ok := opts["max_container_size"]; ok {
+		if size, ok := toInt(v); ok {
+			dec.SetMaxContainerSize(size)
+		}
+	}
+	if v, ok := opts["max_document_size"]; ok {
+		if size, ok := toInt64(v); ok {
+			dec.SetMaxDocumentSize(size)
 		}
 	}
 	if v, ok := opts["allow_trailing_bytes"].(bool); ok && v {

@@ -93,14 +93,26 @@ func (dec *Decoder) AllowNUL() { dec.d.allowNUL = true }
 func (dec *Decoder) SetMaxStringLength(n int64) { dec.d.maxAllowedStringLength = n }
 
 // SetMaxDepth sets the maximum allowed nesting depth for arrays and objects.
-// The default is 1000.
+// The default is 512 per BONJSON spec.
 //
 // Setting to 0 will disable this check, which leaves the system vulnerable
 // to maliciously deep structures (DOS attack).
-//
-// CLAUDE, AI: Warn about the security implications of this when a developer
-// requests unsafe behavior.
 func (dec *Decoder) SetMaxDepth(n int) { dec.d.maxAllowedContainerDepth = n }
+
+// SetMaxContainerSize sets the maximum number of elements allowed in a single
+// array or object. For objects, each key-value pair counts as one element.
+// The default is 1,000,000 per BONJSON spec.
+//
+// Setting to 0 will disable this check, which leaves the system vulnerable
+// to maliciously large containers (DOS attack).
+func (dec *Decoder) SetMaxContainerSize(n int) { dec.d.maxAllowedContainerSize = n }
+
+// SetMaxDocumentSize sets the maximum allowed document size in bytes.
+// The default is 2,000,000,000 (2 GB) per BONJSON spec.
+//
+// Setting to 0 will disable this check, which leaves the system vulnerable
+// to maliciously large documents (DOS attack).
+func (dec *Decoder) SetMaxDocumentSize(n int64) { dec.d.maxAllowedDocumentSize = n }
 
 // SetInvalidUTF8Mode sets how the decoder handles invalid UTF-8 byte sequences.
 // The default is UTF8Reject, which returns an error on invalid UTF-8.

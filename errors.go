@@ -184,6 +184,28 @@ func (e *MaxDepthError) Error() string {
 	return fmt.Sprintf("bonjson: maximum depth %d exceeded at offset %d", e.Depth, e.Offset)
 }
 
+// MaxContainerSizeError is returned when a container has too many elements.
+type MaxContainerSizeError struct {
+	Size   int
+	Max    int
+	Offset int64
+}
+
+func (e *MaxContainerSizeError) Error() string {
+	return fmt.Sprintf("bonjson: container size %d exceeds maximum %d at offset %d", e.Size, e.Max, e.Offset)
+}
+
+// MaxDocumentSizeError is returned when the document exceeds the size limit.
+type MaxDocumentSizeError struct {
+	Size   int64
+	Max    int64
+	Offset int64
+}
+
+func (e *MaxDocumentSizeError) Error() string {
+	return fmt.Sprintf("bonjson: document size %d exceeds maximum %d at offset %d", e.Size, e.Max, e.Offset)
+}
+
 // InvalidTypeCodeError is returned when an invalid type code is encountered.
 type InvalidTypeCodeError struct {
 	TypeCode byte
