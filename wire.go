@@ -137,7 +137,7 @@ func decodeLengthField(src []byte) (length uint64, continuation bool, n int, err
 // decodeLengthPayload decodes a length field payload from src.
 // Returns the payload value, bytes consumed, and any error.
 // The length field uses trailing 1s terminated by a 0 bit.
-// Returns NonCanonicalLengthError if the encoding uses more bytes than necessary.
+// Non-canonical (oversized) length encodings are accepted per the BONJSON spec.
 func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 	if len(src) == 0 {
 		return 0, 0, &TruncatedDataError{Expected: 1, Got: 0, Offset: 0}
@@ -150,11 +150,6 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 			return 0, 0, &TruncatedDataError{Expected: 9, Got: len(src), Offset: 0}
 		}
 		payload = binary.LittleEndian.Uint64(src[1:9])
-		// Check for non-canonical: 9-byte encoding is only needed if payload > max for 8 bytes
-		// Max payload for 8 bytes (count=8) is (1 << 56) - 1
-		if payload <= (1<<56)-1 {
-			return 0, 0, &NonCanonicalLengthError{Offset: 0}
-		}
 		return payload, 9, nil
 	}
 
@@ -166,16 +161,6 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 	}
 
 	payload = readLittleEndianUint64(src, count) >> count
-
-	// Check for non-canonical encoding: payload should require all 'count' bytes
-	// For count > 1, verify payload > max value for (count-1) bytes
-	// Max payload for (count-1) bytes = (1 << (7*(count-1))) - 1
-	if count > 1 {
-		maxForFewerBytes := uint64((1 << (7 * (count - 1))) - 1)
-		if payload <= maxForFewerBytes {
-			return 0, 0, &NonCanonicalLengthError{Offset: 0}
-		}
-	}
 
 	return payload, count, nil
 }

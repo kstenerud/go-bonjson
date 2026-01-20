@@ -157,28 +157,44 @@ func TestLengthFieldBoundaryValues(t *testing.T) {
 	}
 }
 
-func TestNonCanonicalLengthRejection(t *testing.T) {
+func TestNonCanonicalLengthAcceptance(t *testing.T) {
+	// Per BONJSON spec: "Decoders MUST accept non-canonical (oversized) length encodings"
 	tests := []struct {
-		name string
-		data []byte
+		name         string
+		data         []byte
+		wantLength   uint64
+		wantCont     bool
+		wantConsumed int
 	}{
 		// 2-byte encoding for value that fits in 1 byte
-		// Value 0 encoded as 2 bytes: header has trailing 1, so [0x01, 0x00]
-		{"zero_in_2_bytes", []byte{0x01, 0x00}},
+		// Payload 0 encoded as 2 bytes: [0x01, 0x00]
+		{"zero_in_2_bytes", []byte{0x01, 0x00}, 0, false, 2},
 		// 3-byte encoding for small value
-		{"small_in_3_bytes", []byte{0x03, 0x00, 0x00}},
-		// 9-byte encoding for value that fits in 8 bytes
-		{"small_in_9_bytes", []byte{0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+		// Payload 0 encoded as 3 bytes: [0x03, 0x00, 0x00]
+		{"zero_in_3_bytes", []byte{0x03, 0x00, 0x00}, 0, false, 3},
+		// 9-byte encoding for value that fits in fewer bytes
+		// Payload 0 encoded as 9 bytes: [0xff, 0x00, ...]
+		{"zero_in_9_bytes", []byte{0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 0, false, 9},
+		// 2-byte encoding for payload 2 (length=1, cont=false)
+		// Canonical would be 0x04; non-canonical 2-byte: [0x09, 0x00]
+		{"payload2_in_2_bytes", []byte{0x09, 0x00}, 1, false, 2},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, err := decodeLengthField(tt.data)
-			if err == nil {
-				t.Error("expected NonCanonicalLengthError, got nil")
+			length, cont, consumed, err := decodeLengthField(tt.data)
+			if err != nil {
+				t.Errorf("decodeLengthField() unexpected error = %v", err)
+				return
 			}
-			if _, ok := err.(*NonCanonicalLengthError); !ok {
-				t.Errorf("expected NonCanonicalLengthError, got %T: %v", err, err)
+			if length != tt.wantLength {
+				t.Errorf("length = %d, want %d", length, tt.wantLength)
+			}
+			if cont != tt.wantCont {
+				t.Errorf("continuation = %v, want %v", cont, tt.wantCont)
+			}
+			if consumed != tt.wantConsumed {
+				t.Errorf("consumed = %d, want %d", consumed, tt.wantConsumed)
 			}
 		})
 	}
