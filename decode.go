@@ -339,7 +339,7 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		// Small integer (-100 to 100): value = type_code - 100
 		return d.storeInt(int64(tc)-100, pv, ut)
 
-	case tc >= typeUintBase && tc <= typeUintBase+7:
+	case tc&0xf8 == typeUintBase:
 		// Unsigned integer (1-8 bytes, little-endian)
 		n := int(tc&0x07) + 1
 		if d.offsetIntoData+n > len(d.data) {
@@ -349,7 +349,7 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		d.offsetIntoData += n
 		return d.storeUint(val, pv, ut)
 
-	case tc >= typeSintBase && tc <= typeSintBase+7:
+	case tc&0xf8 == typeSintBase:
 		// Signed integer (1-8 bytes, little-endian)
 		n := int(tc&0x07) + 1
 		if d.offsetIntoData+n > len(d.data) {
@@ -458,8 +458,8 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		// since indirect() returns an invalid pv when TextUnmarshaler is found
 		return d.storeBigNumber(bn, v, pv, ut)
 
-	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
-		// Short string
+	case tc&0xf0 == typeShortStringBase:
+		// Short string (0-15 bytes)
 		length := int(tc & 0x0f)
 		if d.offsetIntoData+length > len(d.data) {
 			return &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
@@ -1555,7 +1555,7 @@ func (d *decodeState) readString() ([]byte, error) {
 	}
 
 	switch {
-	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
+	case tc&0xf0 == typeShortStringBase:
 		length := int(tc & 0x0f)
 		if d.offsetIntoData+length > len(d.data) {
 			return nil, &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
@@ -1583,14 +1583,14 @@ func (d *decodeState) skipValue(tc byte) error {
 	case tc <= typeSmallIntMax:
 		// Small integer (-100 to 100)
 		return nil
-	case tc >= typeUintBase && tc <= typeUintBase+7:
+	case tc&0xf8 == typeUintBase:
 		n := int(tc&0x07) + 1
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
 		d.offsetIntoData += n
 		return nil
-	case tc >= typeSintBase && tc <= typeSintBase+7:
+	case tc&0xf8 == typeSintBase:
 		n := int(tc&0x07) + 1
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
@@ -1622,7 +1622,7 @@ func (d *decodeState) skipValue(tc byte) error {
 		}
 		d.offsetIntoData += n
 		return nil
-	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
+	case tc&0xf0 == typeShortStringBase:
 		length := int(tc & 0x0f)
 		if d.offsetIntoData+length > len(d.data) {
 			return &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}

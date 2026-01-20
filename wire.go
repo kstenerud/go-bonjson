@@ -244,7 +244,7 @@ func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint
 		}
 		return val, 0, 0, nil
 
-	case typeCode >= typeUintBase && typeCode <= typeUintBase+7:
+	case typeCode&0xf8 == typeUintBase:
 		// Unsigned integer
 		n = int(typeCode&0x07) + 1
 		if len(src) < n {
@@ -253,7 +253,7 @@ func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint
 		unsignedVal = readLittleEndianUint64(src, n)
 		return int64(unsignedVal), unsignedVal, n, nil
 
-	case typeCode >= typeSintBase && typeCode <= typeSintBase+7:
+	case typeCode&0xf8 == typeSintBase:
 		// Signed integer
 		n = int(typeCode&0x07) + 1
 		if len(src) < n {

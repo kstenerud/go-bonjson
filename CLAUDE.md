@@ -144,6 +144,11 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 0xfa-0xff  Reserved
 ```
 
+Type codes are arranged to enable efficient mask-based detection:
+- Unsigned integers: `tc&0xf8 == 0xd0` matches 0xd0-0xd7, byte count = `(tc&0x07)+1`
+- Signed integers: `tc&0xf8 == 0xd8` matches 0xd8-0xdf, byte count = `(tc&0x07)+1`
+- Short strings: `tc&0xf0 == 0xe0` matches 0xe0-0xef, length = `tc&0x0f`
+
 ### Chunked Containers
 Arrays and objects use chunked encoding for streaming support:
 - Type code (0xf8 or 0xf9) followed by one or more length field chunks
