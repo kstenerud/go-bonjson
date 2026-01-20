@@ -746,21 +746,59 @@ type structEncoder struct {
 }
 
 func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
-	e.WriteByte(typeObjectStart)
-FieldLoop:
+	// First pass: count non-omitted fields
+	count := 0
 	for i := range se.fields.list {
 		f := &se.fields.list[i]
 
 		// Find the nested struct field by following f.index.
 		fv := v
-		for _, i := range f.index {
+		skip := false
+		for _, idx := range f.index {
 			if fv.Kind() == reflect.Pointer {
 				if fv.IsNil() {
-					continue FieldLoop
+					skip = true
+					break
 				}
 				fv = fv.Elem()
 			}
-			fv = fv.Field(i)
+			fv = fv.Field(idx)
+		}
+		if skip {
+			continue
+		}
+
+		if (f.omitEmpty && isEmptyValue(fv)) ||
+			(f.omitZero && (f.isZero == nil && fv.IsZero() || (f.isZero != nil && f.isZero(fv)))) {
+			continue
+		}
+		count++
+	}
+
+	// Write object type code and chunk header (single chunk with pair count)
+	e.WriteByte(typeObject)
+	lfSize := encodeLengthField(e.scratch[:], uint64(count), false)
+	e.Write(e.scratch[:lfSize])
+
+	// Second pass: write fields
+	for i := range se.fields.list {
+		f := &se.fields.list[i]
+
+		// Find the nested struct field by following f.index.
+		fv := v
+		skip := false
+		for _, idx := range f.index {
+			if fv.Kind() == reflect.Pointer {
+				if fv.IsNil() {
+					skip = true
+					break
+				}
+				fv = fv.Elem()
+			}
+			fv = fv.Field(idx)
+		}
+		if skip {
+			continue
 		}
 
 		if (f.omitEmpty && isEmptyValue(fv)) ||
@@ -772,7 +810,6 @@ FieldLoop:
 		opts.quoted = f.quoted
 		f.encoder(e, fv, opts)
 	}
-	e.WriteByte(typeContainerEnd)
 }
 
 func newStructEncoder(t reflect.Type) encoderFunc {
@@ -827,7 +864,10 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 	}
 
 	// Slow path: use reflect.MapRange for other map types
-	e.WriteByte(typeObjectStart)
+	// Write object type code and chunk header (single chunk with pair count)
+	e.WriteByte(typeObject)
+	lfSize := encodeLengthField(e.scratch[:], uint64(v.Len()), false)
+	e.Write(e.scratch[:lfSize])
 
 	// Extract and sort the keys.
 	var (
@@ -849,14 +889,15 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 		e.writeString(kv.ks)
 		me.elemEnc(e, kv.v, opts)
 	}
-	e.WriteByte(typeContainerEnd)
 	e.ptrLevel--
 }
 
 // Fast path encoders for common map types
 
 func (me mapEncoder) encodeMapStringString(e *encodeState, m map[string]string) {
-	e.WriteByte(typeObjectStart)
+	e.WriteByte(typeObject)
+	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
+	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -866,11 +907,12 @@ func (me mapEncoder) encodeMapStringString(e *encodeState, m map[string]string) 
 		e.writeString(k)
 		e.writeString(m[k])
 	}
-	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringAny(e *encodeState, m map[string]any, opts encOpts) {
-	e.WriteByte(typeObjectStart)
+	e.WriteByte(typeObject)
+	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
+	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -880,11 +922,12 @@ func (me mapEncoder) encodeMapStringAny(e *encodeState, m map[string]any, opts e
 		e.writeString(k)
 		e.reflectValue(reflect.ValueOf(m[k]), opts)
 	}
-	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringInt(e *encodeState, m map[string]int) {
-	e.WriteByte(typeObjectStart)
+	e.WriteByte(typeObject)
+	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
+	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -894,11 +937,12 @@ func (me mapEncoder) encodeMapStringInt(e *encodeState, m map[string]int) {
 		e.writeString(k)
 		e.writeSmallInt(int64(m[k]))
 	}
-	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringInt64(e *encodeState, m map[string]int64) {
-	e.WriteByte(typeObjectStart)
+	e.WriteByte(typeObject)
+	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
+	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -908,11 +952,12 @@ func (me mapEncoder) encodeMapStringInt64(e *encodeState, m map[string]int64) {
 		e.writeString(k)
 		e.writeSmallInt(m[k])
 	}
-	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringFloat64(e *encodeState, m map[string]float64) {
-	e.WriteByte(typeObjectStart)
+	e.WriteByte(typeObject)
+	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
+	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -922,11 +967,12 @@ func (me mapEncoder) encodeMapStringFloat64(e *encodeState, m map[string]float64
 		e.writeString(k)
 		e.writeFloat64(m[k])
 	}
-	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringBool(e *encodeState, m map[string]bool) {
-	e.WriteByte(typeObjectStart)
+	e.WriteByte(typeObject)
+	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
+	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -940,7 +986,6 @@ func (me mapEncoder) encodeMapStringBool(e *encodeState, m map[string]bool) {
 			e.WriteByte(typeFalse)
 		}
 	}
-	e.WriteByte(typeContainerEnd)
 }
 
 func newMapEncoder(t reflect.Type) encoderFunc {
@@ -1010,12 +1055,14 @@ type arrayEncoder struct {
 }
 
 func (ae arrayEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
-	e.WriteByte(typeArrayStart)
 	n := v.Len()
+	// Write array type code and chunk header (single chunk with element count)
+	e.WriteByte(typeArray)
+	lfSize := encodeLengthField(e.scratch[:], uint64(n), false)
+	e.Write(e.scratch[:lfSize])
 	for i := 0; i < n; i++ {
 		ae.elemEnc(e, v.Index(i), opts)
 	}
-	e.WriteByte(typeContainerEnd)
 }
 
 func newArrayEncoder(t reflect.Type) encoderFunc {

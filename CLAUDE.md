@@ -64,11 +64,12 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 4. Encoder cache (sync.Map) avoids repeated reflection for custom types
 
 ### Type-Specific Encoding
-- **Small integers** (-100 to +100): Single byte (type code = value)
+- **Small integers** (-100 to +100): Single byte (type code = value + 100, so 0x00-0xc8)
 - **Large integers**: Type code + 1-8 bytes little-endian
 - **Floats**: Auto-selects bfloat16 (3 bytes), float32 (5 bytes), or float64 (9 bytes)
-- **Short strings** (0-15 bytes): Type code encodes length (0x80-0x8f)
-- **Long strings**: Header (0x68) + length field + data
+- **Short strings** (0-15 bytes): Type code encodes length (0xe0-0xef)
+- **Long strings**: Header (0xf0) + chunked length fields + data
+- **Arrays/Objects**: Type code (0xf8/0xf9) + chunked element counts
 - **Maps**: Sorted by key for deterministic output
 - **Structs**: Uses cached field metadata, respects omitempty/omitzero
 
@@ -125,27 +126,40 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 
 ### Type Codes
 ```
-0x00-0x64  Small positive integers (0-100)
-0x68       Long string
-0x69       BigNumber
-0x6a       Float16 (bfloat16)
-0x6b       Float32
-0x6c       Float64
-0x6d       Null
-0x6e       False
-0x6f       True
-0x70-0x77  Unsigned integers (1-8 bytes)
-0x78-0x7f  Signed integers (1-8 bytes)
-0x80-0x8f  Short strings (0-15 bytes)
-0x99       Array start
-0x9a       Object start
-0x9b       Container end
-0x9c-0xff  Small negative integers (-100 to -1)
+0x00-0xc8  Small integers (-100 to +100, type code = value + 100)
+0xc9-0xcf  Reserved
+0xd0-0xd7  Unsigned integers (1-8 bytes)
+0xd8-0xdf  Signed integers (1-8 bytes)
+0xe0-0xef  Short strings (0-15 bytes)
+0xf0       Long string (chunked)
+0xf1       BigNumber
+0xf2       Float16 (bfloat16)
+0xf3       Float32
+0xf4       Float64
+0xf5       Null
+0xf6       False
+0xf7       True
+0xf8       Array (chunked)
+0xf9       Object (chunked)
+0xfa-0xff  Reserved
 ```
 
+### Chunked Containers
+Arrays and objects use chunked encoding for streaming support:
+- Type code (0xf8 or 0xf9) followed by one or more length field chunks
+- Each chunk's length field encodes: `(element_count << 1) | continuation_bit`
+- continuation_bit=1 means more chunks follow; continuation_bit=0 ends container
+- Empty chunks with continuation bit set (byte 0x02) are invalid
+
+### Chunked Long Strings
+Long strings (0xf0) also use chunked encoding:
+- Multiple chunks of raw bytes, each with length field
+- UTF-8 validation happens on the complete assembled string, not per-chunk
+- This allows UTF-8 multi-byte sequences to span chunk boundaries
+
 ### Length Field Encoding
-Variable-length encoding using continuation bits:
-- Single byte: payload fits in 7 bits
+Variable-length encoding using trailing zero bits:
+- Single byte: payload fits in 7 bits (bit 0 = 1)
 - Multi-byte: trailing zeros count determines byte count
 - 9-byte: header 0x00 + 8-byte little-endian payload
 

@@ -187,14 +187,40 @@ func TestDecoderMoreOnEmptyInput(t *testing.T) {
 	}
 }
 
-func TestDecoderMoreDetectsContainerEnd(t *testing.T) {
-	// Test More() correctly identifies container end marker
-	// More() peeks the next byte and returns false if it's typeContainerEnd
-	data := []byte{typeContainerEnd}
+func TestDecoderMoreAfterChunkExhausted(t *testing.T) {
+	// Test More() correctly identifies when chunk is exhausted
+	// With chunked format, More() returns false when chunkRemaining is 0 and no continuation
+	// Build an array with one element, and read it
+	data := []byte{
+		typeArray,
+		0x04,      // chunk: count=1, no continuation
+		typeNull,  // the one element
+	}
 	dec := NewDecoder(bytes.NewReader(data))
 
+	// Read array start
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+	if d, ok := tok.(Delim); !ok || d != '[' {
+		t.Fatalf("expected '[', got %v", tok)
+	}
+
+	// Now More() should return true (one element remaining)
+	if !dec.More() {
+		t.Error("More() = false when element remaining, expected true")
+	}
+
+	// Read the element
+	_, err = dec.Token()
+	if err != nil {
+		t.Fatalf("Token error: %v", err)
+	}
+
+	// Now More() should return false (chunk exhausted, no continuation)
 	if dec.More() {
-		t.Error("More() = true for container end marker, expected false")
+		t.Error("More() = true after chunk exhausted, expected false")
 	}
 }
 
@@ -318,16 +344,18 @@ func TestDecoderAllowNUL(t *testing.T) {
 }
 
 func TestDecoderSetMaxDepth(t *testing.T) {
-	// Create nested arrays
+	// Create nested arrays using chunked format
 	depth := 20
 	var buf bytes.Buffer
-	for i := 0; i < depth; i++ {
-		buf.WriteByte(typeArrayStart)
+	// Each nested array (except innermost) contains one element
+	for i := 0; i < depth-1; i++ {
+		buf.WriteByte(typeArray)
+		buf.WriteByte(0x04) // chunk: count=1, no continuation
 	}
+	// Innermost array contains null
+	buf.WriteByte(typeArray)
+	buf.WriteByte(0x04) // chunk: count=1, no continuation
 	buf.WriteByte(typeNull)
-	for i := 0; i < depth; i++ {
-		buf.WriteByte(typeContainerEnd)
-	}
 
 	// Should succeed with adequate depth
 	dec1 := NewDecoder(bytes.NewReader(buf.Bytes()))
@@ -1359,8 +1387,8 @@ func TestInputOffsetAccuracy(t *testing.T) {
 
 // Test More() behavior after error
 func TestMoreAfterError(t *testing.T) {
-	// Create invalid data using reserved type code 0x65
-	invalidData := []byte{0x65} // Reserved type code - invalid
+	// Create invalid data using reserved type code 0xc9 (in the 0xc9-0xcf reserved range)
+	invalidData := []byte{0xc9} // Reserved type code - invalid
 
 	dec := NewDecoder(bytes.NewReader(invalidData))
 

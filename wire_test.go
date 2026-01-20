@@ -220,16 +220,19 @@ func TestLengthField9ByteEncoding(t *testing.T) {
 
 func TestIntegerBoundaryValues(t *testing.T) {
 	t.Run("small_int_boundaries", func(t *testing.T) {
-		// Small positive integers: 0-100
+		// Small integers: -100 to 100 encode as single byte (value + 100)
 		dst := make([]byte, 16)
+
+		// 0 encodes to 0x64 (0 + 100 = 100)
 		n := encodeUnsignedInt(dst, 0)
-		if n != 1 || dst[0] != 0 {
-			t.Errorf("0 should encode as single byte 0x00, got %d bytes: %v", n, dst[:n])
+		if n != 1 || dst[0] != 0x64 {
+			t.Errorf("0 should encode as single byte 0x64 (value+100), got %d bytes: %v", n, dst[:n])
 		}
 
+		// 100 encodes to 0xc8 (100 + 100 = 200)
 		n = encodeUnsignedInt(dst, 100)
-		if n != 1 || dst[0] != 100 {
-			t.Errorf("100 should encode as single byte 0x64, got %d bytes: %v", n, dst[:n])
+		if n != 1 || dst[0] != 0xc8 {
+			t.Errorf("100 should encode as single byte 0xc8 (value+100), got %d bytes: %v", n, dst[:n])
 		}
 
 		n = encodeUnsignedInt(dst, 101)
@@ -237,15 +240,16 @@ func TestIntegerBoundaryValues(t *testing.T) {
 			t.Errorf("101 should encode as 2 bytes (type + 1 data), got %d", n)
 		}
 
-		// Small negative integers: -100 to -1
+		// -1 encodes to 0x63 (-1 + 100 = 99)
 		n = encodeSignedInt(dst, -1)
-		if n != 1 || int8(dst[0]) != -1 {
-			t.Errorf("-1 should encode as single byte 0xff, got %d bytes: %v", n, dst[:n])
+		if n != 1 || dst[0] != 0x63 {
+			t.Errorf("-1 should encode as single byte 0x63 (value+100), got %d bytes: %v", n, dst[:n])
 		}
 
+		// -100 encodes to 0x00 (-100 + 100 = 0)
 		n = encodeSignedInt(dst, -100)
-		if n != 1 || int8(dst[0]) != -100 {
-			t.Errorf("-100 should encode as single byte 0x9c, got %d bytes: %v", n, dst[:n])
+		if n != 1 || dst[0] != 0x00 {
+			t.Errorf("-100 should encode as single byte 0x00 (value+100), got %d bytes: %v", n, dst[:n])
 		}
 
 		n = encodeSignedInt(dst, -101)
@@ -654,11 +658,12 @@ func TestEncodeNumberOptimalFormat(t *testing.T) {
 		wantType  byte
 		wantBytes int
 	}{
-		{"small_int_zero", 0, 0x00, 1},
-		{"small_int_100", 100, 0x64, 1},
-		{"sint_101", 101, typeSintBase, 2}, // Prefer signed per spec when same size
-		{"small_neg_minus1", -1, 0xFF, 1},
-		{"small_neg_minus100", -100, 0x9C, 1},
+		// Small integers encode as value + 100
+		{"small_int_zero", 0, 0x64, 1},      // 0 + 100 = 0x64
+		{"small_int_100", 100, 0xc8, 1},     // 100 + 100 = 200 = 0xc8
+		{"sint_101", 101, typeSintBase, 2},  // Prefer signed per spec when same size
+		{"small_neg_minus1", -1, 0x63, 1},   // -1 + 100 = 99 = 0x63
+		{"small_neg_minus100", -100, 0x00, 1}, // -100 + 100 = 0
 		{"sint_minus101", -101, typeSintBase, 2},
 		{"bfloat16", 0.5, typeFloat16, 3},
 		{"float32", 1.0000001192092896, typeFloat32, 5},

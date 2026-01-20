@@ -28,7 +28,6 @@ import (
 	"bytes"
 	"encoding"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -337,12 +336,8 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 
 	switch {
 	case tc <= typeSmallIntMax:
-		// Small positive integer (0-100)
-		return d.storeInt(int64(tc), pv, ut)
-
-	case tc >= typeSmallNegIntMin:
-		// Small negative integer (-100 to -1)
-		return d.storeInt(int64(int8(tc)), pv, ut)
+		// Small integer (-100 to 100): value = type_code - 100
+		return d.storeInt(int64(tc)-100, pv, ut)
 
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		// Unsigned integer (1-8 bytes, little-endian)
@@ -490,10 +485,10 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 	case tc == typeTrue:
 		return d.storeBool(true, pv, ut)
 
-	case tc == typeArrayStart:
+	case tc == typeArray:
 		return d.decodeArray(pv, v)
 
-	case tc == typeObjectStart:
+	case tc == typeObject:
 		return d.decodeObject(pv, v)
 
 	default:
@@ -1161,7 +1156,6 @@ func (d *decodeState) storeNull(v reflect.Value, _ reflect.Value) error {
 }
 
 func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
-	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	if err := d.enterContainer(); err != nil {
 		return err
 	}
@@ -1184,66 +1178,85 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 	isSlice := vKind == reflect.Slice
 	if !isSlice && vKind != reflect.Array {
 		d.saveError(&UnmarshalTypeError{Value: "array", Type: vType, Offset: int64(d.offsetIntoData)})
-		return d.skipContainer()
+		return d.skipChunkedContainer(false)
 	}
 
 	vLen := v.Len()
-	i := 0
+	totalElements := 0
+	chunkCount := 0
+
+	// Read chunks until continuation bit is 0
 	for {
-		tc, err := d.peekByte()
+		// Read chunk header
+		chunkElements, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
 		if err != nil {
-			// EOF at container boundary means unclosed container
-			var truncErr *TruncatedDataError
-			if errors.As(err, &truncErr) {
-				return &UnclosedContainerError{ContainerType: "array", Offset: int64(containerStart)}
-			}
 			return err
 		}
+		d.offsetIntoData += n
+		chunkCount++
 
-		if tc == typeContainerEnd {
-			d.offsetIntoData++ // consume the end marker
+		// Empty chunk with continuation is invalid
+		if chunkElements == 0 && continuation {
+			return &EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)}
+		}
+
+		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
+			return &TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)}
+		}
+
+		// Check container size limit
+		if d.maxAllowedContainerSize > 0 && totalElements+int(chunkElements) > d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: totalElements + int(chunkElements), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+		}
+
+		// Pre-allocate slice if possible (use first chunk as hint)
+		if isSlice && chunkCount == 1 && !continuation && chunkElements > 0 {
+			if v.Cap() < int(chunkElements) {
+				v.Grow(int(chunkElements) - v.Cap())
+			}
+		}
+
+		// Read elements in this chunk
+		for j := uint64(0); j < chunkElements; j++ {
+			// Expand slice if necessary
+			if isSlice {
+				if totalElements >= v.Cap() {
+					v.Grow(1)
+				}
+				if totalElements >= vLen {
+					vLen++
+					v.SetLen(vLen)
+				}
+			}
+
+			if totalElements < vLen {
+				if err := d.decodeValue(v.Index(totalElements)); err != nil {
+					return err
+				}
+			} else {
+				// Ran out of fixed array: skip
+				if err := d.decodeValue(reflect.Value{}); err != nil {
+					return err
+				}
+			}
+			totalElements++
+		}
+
+		if !continuation {
 			break
 		}
-
-		// Check container size limit before adding element
-		if d.maxAllowedContainerSize > 0 && i >= d.maxAllowedContainerSize {
-			return &MaxContainerSizeError{Size: i + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
-		}
-
-		// Expand slice if necessary
-		if isSlice {
-			if i >= v.Cap() {
-				v.Grow(1)
-			}
-			if i >= vLen {
-				vLen++
-				v.SetLen(vLen)
-			}
-		}
-
-		if i < vLen {
-			if err := d.decodeValue(v.Index(i)); err != nil {
-				return err
-			}
-		} else {
-			// Ran out of fixed array: skip
-			if err := d.decodeValue(reflect.Value{}); err != nil {
-				return err
-			}
-		}
-		i++
 	}
 
-	if i < vLen {
+	if totalElements < vLen {
 		if isSlice {
-			v.SetLen(i)
+			v.SetLen(totalElements)
 		} else {
-			for ; i < vLen; i++ {
+			for i := totalElements; i < vLen; i++ {
 				v.Index(i).SetZero()
 			}
 		}
 	}
-	if i == 0 && isSlice {
+	if totalElements == 0 && isSlice {
 		v.Set(reflect.MakeSlice(vType, 0, 0))
 	}
 	return nil
@@ -1285,7 +1298,6 @@ func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
 }
 
 func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
-	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	t := v.Type()
 	kt := t.Key()
 
@@ -1297,7 +1309,7 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 	default:
 		if !reflect.PointerTo(kt).Implements(textUnmarshalerType) {
 			d.saveError(&UnmarshalTypeError{Value: "object", Type: t, Offset: int64(d.offsetIntoData)})
-			return d.skipContainer()
+			return d.skipChunkedContainer(true)
 		}
 	}
 
@@ -1307,75 +1319,86 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 
 	elemType := t.Elem()
 	mapElem := reflect.New(elemType).Elem()
-	count := 0
+	totalPairs := 0
+	chunkCount := 0
 
+	// Read chunks until continuation bit is 0
 	for {
-		tc, err := d.peekByte()
-		if err != nil {
-			// EOF at container boundary means unclosed container
-			var truncErr *TruncatedDataError
-			if errors.As(err, &truncErr) {
-				return &UnclosedContainerError{ContainerType: "object", Offset: int64(containerStart)}
-			}
-			return err
-		}
-
-		if tc == typeContainerEnd {
-			d.offsetIntoData++
-			break
-		}
-
-		// Check container size limit before adding key-value pair
-		if d.maxAllowedContainerSize > 0 && count >= d.maxAllowedContainerSize {
-			return &MaxContainerSizeError{Size: count + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
-		}
-
-		// Read key (must be a string)
-		keyStart := d.offsetIntoData
-		key, err := d.readString()
+		// Read chunk header
+		chunkPairs, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
+		d.offsetIntoData += n
+		chunkCount++
 
-		// Convert key to appropriate type
-		kv, err := d.convertMapKey(kt, key, keyStart)
-		if err != nil {
-			d.saveError(err)
-			// Skip value and continue
-			if err := d.decodeValue(reflect.Value{}); err != nil {
+		// Empty chunk with continuation is invalid
+		if chunkPairs == 0 && continuation {
+			return &EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)}
+		}
+
+		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
+			return &TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)}
+		}
+
+		// Check container size limit
+		if d.maxAllowedContainerSize > 0 && totalPairs+int(chunkPairs) > d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: totalPairs + int(chunkPairs), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+		}
+
+		// Read key-value pairs in this chunk
+		for j := uint64(0); j < chunkPairs; j++ {
+			// Read key (must be a string)
+			keyStart := d.offsetIntoData
+			key, err := d.readString()
+			if err != nil {
 				return err
 			}
-			continue
-		}
 
-		// Check for duplicate key
-		if kv.IsValid() && v.MapIndex(kv).IsValid() {
-			switch d.duplicateKeyMode {
-			case DupKeyReject:
-				return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
-			case DupKeyKeepFirst:
-				// Skip this value, keep the existing one
+			// Convert key to appropriate type
+			kv, err := d.convertMapKey(kt, key, keyStart)
+			if err != nil {
+				d.saveError(err)
+				// Skip value and continue
 				if err := d.decodeValue(reflect.Value{}); err != nil {
 					return err
 				}
 				continue
-			case DupKeyKeepLast:
-				// Fall through to decode and replace
 			}
+
+			// Check for duplicate key
+			if kv.IsValid() && v.MapIndex(kv).IsValid() {
+				switch d.duplicateKeyMode {
+				case DupKeyReject:
+					return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
+				case DupKeyKeepFirst:
+					// Skip this value, keep the existing one
+					if err := d.decodeValue(reflect.Value{}); err != nil {
+						return err
+					}
+					continue
+				case DupKeyKeepLast:
+					// Fall through to decode and replace
+				}
+			}
+
+			// Reset map element for reuse
+			mapElem.SetZero()
+
+			// Read value
+			if err := d.decodeValue(mapElem); err != nil {
+				return err
+			}
+
+			if kv.IsValid() {
+				v.SetMapIndex(kv, mapElem)
+			}
+			totalPairs++
 		}
 
-		// Reset map element for reuse
-		mapElem.SetZero()
-
-		// Read value
-		if err := d.decodeValue(mapElem); err != nil {
-			return err
+		if !continuation {
+			break
 		}
-
-		if kv.IsValid() {
-			v.SetMapIndex(kv, mapElem)
-		}
-		count++
 	}
 	return nil
 }
@@ -1413,55 +1436,65 @@ func (d *decodeState) convertMapKey(kt reflect.Type, key []byte, keyStart int) (
 }
 
 func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
-	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	fields := cachedTypeFields(v.Type())
 	seenFields := d.pushSeenStructFields(fields.fieldCount)
 	defer d.popSeenStructFields()
-	count := 0
+	totalPairs := 0
+	chunkCount := 0
 
+	// Read chunks until continuation bit is 0
 	for {
-		tc, err := d.peekByte()
-		if err != nil {
-			// EOF at container boundary means unclosed container
-			var truncErr *TruncatedDataError
-			if errors.As(err, &truncErr) {
-				return &UnclosedContainerError{ContainerType: "object", Offset: int64(containerStart)}
-			}
-			return err
-		}
-
-		if tc == typeContainerEnd {
-			d.offsetIntoData++
-			break
-		}
-
-		// Check container size limit before adding key-value pair
-		if d.maxAllowedContainerSize > 0 && count >= d.maxAllowedContainerSize {
-			return &MaxContainerSizeError{Size: count + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
-		}
-
-		// Read key (must be a string)
-		keyStart := d.offsetIntoData
-		key, err := d.readString()
+		// Read chunk header
+		chunkPairs, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
+		d.offsetIntoData += n
+		chunkCount++
 
-		// Find field for key and check for duplicates
-		fieldValue, skip := d.findStructFieldWithDupCheck(v, &fields, key, keyStart, seenFields)
-		if skip {
-			// Skip this value (duplicate with KeepFirst mode)
-			if err := d.decodeValue(reflect.Value{}); err != nil {
+		// Empty chunk with continuation is invalid
+		if chunkPairs == 0 && continuation {
+			return &EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)}
+		}
+
+		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
+			return &TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)}
+		}
+
+		// Check container size limit
+		if d.maxAllowedContainerSize > 0 && totalPairs+int(chunkPairs) > d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: totalPairs + int(chunkPairs), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+		}
+
+		// Read key-value pairs in this chunk
+		for j := uint64(0); j < chunkPairs; j++ {
+			// Read key (must be a string)
+			keyStart := d.offsetIntoData
+			key, err := d.readString()
+			if err != nil {
 				return err
 			}
-			continue
+
+			// Find field for key and check for duplicates
+			fieldValue, skip := d.findStructFieldWithDupCheck(v, &fields, key, keyStart, seenFields)
+			if skip {
+				// Skip this value (duplicate with KeepFirst mode)
+				if err := d.decodeValue(reflect.Value{}); err != nil {
+					return err
+				}
+				continue
+			}
+
+			// Read value
+			if err := d.decodeValue(fieldValue); err != nil {
+				return err
+			}
+			totalPairs++
 		}
 
-		// Read value
-		if err := d.decodeValue(fieldValue); err != nil {
-			return err
+		if !continuation {
+			break
 		}
-		count++
 	}
 	return nil
 }
@@ -1548,8 +1581,7 @@ func (d *decodeState) readString() ([]byte, error) {
 func (d *decodeState) skipValue(tc byte) error {
 	switch {
 	case tc <= typeSmallIntMax:
-		return nil
-	case tc >= typeSmallNegIntMin:
+		// Small integer (-100 to 100)
 		return nil
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		n := int(tc&0x07) + 1
@@ -1606,30 +1638,61 @@ func (d *decodeState) skipValue(tc byte) error {
 		return nil
 	case tc == typeNull, tc == typeFalse, tc == typeTrue:
 		return nil
-	case tc == typeArrayStart, tc == typeObjectStart:
-		return d.skipContainer()
+	case tc == typeArray:
+		return d.skipChunkedContainer(false)
+	case tc == typeObject:
+		return d.skipChunkedContainer(true)
 	default:
 		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.offsetIntoData - 1)}
 	}
 }
 
-// skipContainer skips over an array or object
+// skipContainer is kept for backwards compatibility but deprecated
+// use skipChunkedContainer instead
 func (d *decodeState) skipContainer() error {
-	depth := 1
-	for depth > 0 {
-		tc, err := d.readByte()
+	return d.skipChunkedContainer(false)
+}
+
+// skipChunkedContainer skips over a chunked array or object
+// isObject indicates whether to skip key-value pairs (true) or just values (false)
+func (d *decodeState) skipChunkedContainer(isObject bool) error {
+	for {
+		// Read chunk header
+		count, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
-		switch tc {
-		case typeArrayStart, typeObjectStart:
-			depth++
-		case typeContainerEnd:
-			depth--
-		default:
+		d.offsetIntoData += n
+
+		// Empty chunk with continuation is invalid
+		if count == 0 && continuation {
+			return &EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)}
+		}
+
+		// Skip items in this chunk
+		for i := uint64(0); i < count; i++ {
+			if isObject {
+				// Skip key
+				tc, err := d.readByte()
+				if err != nil {
+					return err
+				}
+				if err := d.skipValue(tc); err != nil {
+					return err
+				}
+			}
+			// Skip value
+			tc, err := d.readByte()
+			if err != nil {
+				return err
+			}
 			if err := d.skipValue(tc); err != nil {
 				return err
 			}
+		}
+
+		if !continuation {
+			break
 		}
 	}
 	return nil
@@ -1637,103 +1700,143 @@ func (d *decodeState) skipContainer() error {
 
 // arrayInterface decodes an array into []any
 func (d *decodeState) arrayInterface() []any {
-	containerStart := d.offsetIntoData - 1 // type code was already consumed
-	var v = make([]any, 0)
+	var v []any
+	totalElements := 0
+	chunkCount := 0
+
+	// Read chunks until continuation bit is 0
 	for {
-		tc, err := d.peekByte()
+		// Read chunk header
+		chunkElements, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
 		if err != nil {
-			// EOF at container boundary means unclosed container
-			var truncErr *TruncatedDataError
-			if errors.As(err, &truncErr) {
-				d.saveError(&UnclosedContainerError{ContainerType: "array", Offset: int64(containerStart)})
-			} else {
-				d.saveError(err)
-			}
-			return v
-		}
-		if tc == typeContainerEnd {
-			d.offsetIntoData++
-			break
-		}
-
-		// Check container size limit before adding element
-		if d.maxAllowedContainerSize > 0 && len(v) >= d.maxAllowedContainerSize {
-			d.saveError(&MaxContainerSizeError{Size: len(v) + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
-			return v
-		}
-
-		var elem any
-		ev := reflect.ValueOf(&elem).Elem()
-		if err := d.decodeValue(ev); err != nil {
 			d.saveError(err)
 			return v
 		}
-		v = append(v, elem)
+		d.offsetIntoData += n
+		chunkCount++
+
+		// Empty chunk with continuation is invalid
+		if chunkElements == 0 && continuation {
+			d.saveError(&EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)})
+			return v
+		}
+
+		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
+			d.saveError(&TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)})
+			return v
+		}
+
+		// Check container size limit
+		if d.maxAllowedContainerSize > 0 && totalElements+int(chunkElements) > d.maxAllowedContainerSize {
+			d.saveError(&MaxContainerSizeError{Size: totalElements + int(chunkElements), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
+			return v
+		}
+
+		// Pre-allocate for first single chunk (optimization)
+		if v == nil && !continuation && chunkElements > 0 {
+			v = make([]any, 0, chunkElements)
+		} else if v == nil {
+			v = make([]any, 0)
+		}
+
+		// Read elements in this chunk
+		for j := uint64(0); j < chunkElements; j++ {
+			var elem any
+			ev := reflect.ValueOf(&elem).Elem()
+			if err := d.decodeValue(ev); err != nil {
+				d.saveError(err)
+				return v
+			}
+			v = append(v, elem)
+			totalElements++
+		}
+
+		if !continuation {
+			break
+		}
+	}
+
+	if v == nil {
+		v = make([]any, 0)
 	}
 	return v
 }
 
 // objectInterface decodes an object into map[string]any
 func (d *decodeState) objectInterface() map[string]any {
-	containerStart := d.offsetIntoData - 1 // type code was already consumed
 	m := make(map[string]any)
+	totalPairs := 0
+	chunkCount := 0
 
+	// Read chunks until continuation bit is 0
 	for {
-		tc, err := d.peekByte()
+		// Read chunk header
+		chunkPairs, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
 		if err != nil {
-			// EOF at container boundary means unclosed container
-			var truncErr *TruncatedDataError
-			if errors.As(err, &truncErr) {
-				d.saveError(&UnclosedContainerError{ContainerType: "object", Offset: int64(containerStart)})
-			} else {
-				d.saveError(err)
-			}
+			d.saveError(err)
 			return m
 		}
-		if tc == typeContainerEnd {
-			d.offsetIntoData++
+		d.offsetIntoData += n
+		chunkCount++
+
+		// Empty chunk with continuation is invalid
+		if chunkPairs == 0 && continuation {
+			d.saveError(&EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)})
+			return m
+		}
+
+		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
+			d.saveError(&TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)})
+			return m
+		}
+
+		// Check container size limit
+		if d.maxAllowedContainerSize > 0 && totalPairs+int(chunkPairs) > d.maxAllowedContainerSize {
+			d.saveError(&MaxContainerSizeError{Size: totalPairs + int(chunkPairs), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
+			return m
+		}
+
+		// Read key-value pairs in this chunk
+		for j := uint64(0); j < chunkPairs; j++ {
+			keyStart := d.offsetIntoData
+			key, err := d.readString()
+			if err != nil {
+				d.saveError(err)
+				return m
+			}
+
+			keyStr := string(key)
+			// Check for duplicate key using the map itself
+			if _, exists := m[keyStr]; exists {
+				switch d.duplicateKeyMode {
+				case DupKeyReject:
+					d.saveError(&DuplicateKeyError{Key: keyStr, Offset: int64(keyStart)})
+					return m
+				case DupKeyKeepFirst:
+					// Skip this value, keep the existing one
+					if err := d.decodeValue(reflect.Value{}); err != nil {
+						d.saveError(err)
+						return m
+					}
+					continue
+				case DupKeyKeepLast:
+					// Fall through to decode and replace
+				}
+			}
+
+			var val any
+			ev := reflect.ValueOf(&val).Elem()
+			if err := d.decodeValue(ev); err != nil {
+				d.saveError(err)
+				return m
+			}
+			m[keyStr] = val
+			totalPairs++
+		}
+
+		if !continuation {
 			break
 		}
-
-		// Check container size limit before adding key-value pair
-		if d.maxAllowedContainerSize > 0 && len(m) >= d.maxAllowedContainerSize {
-			d.saveError(&MaxContainerSizeError{Size: len(m) + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
-			return m
-		}
-
-		keyStart := d.offsetIntoData
-		key, err := d.readString()
-		if err != nil {
-			d.saveError(err)
-			return m
-		}
-
-		keyStr := string(key)
-		// Check for duplicate key using the map itself
-		if _, exists := m[keyStr]; exists {
-			switch d.duplicateKeyMode {
-			case DupKeyReject:
-				d.saveError(&DuplicateKeyError{Key: keyStr, Offset: int64(keyStart)})
-				return m
-			case DupKeyKeepFirst:
-				// Skip this value, keep the existing one
-				if err := d.decodeValue(reflect.Value{}); err != nil {
-					d.saveError(err)
-					return m
-				}
-				continue
-			case DupKeyKeepLast:
-				// Fall through to decode and replace
-			}
-		}
-
-		var val any
-		ev := reflect.ValueOf(&val).Elem()
-		if err := d.decodeValue(ev); err != nil {
-			d.saveError(err)
-			return m
-		}
-		m[keyStr] = val
 	}
 	return m
 }

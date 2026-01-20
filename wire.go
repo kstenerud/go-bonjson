@@ -28,7 +28,6 @@ import (
 	"encoding/binary"
 	"math"
 	"math/bits"
-	"unicode/utf8"
 )
 
 // wire.go contains low-level binary encoding and decoding functions for BONJSON.
@@ -188,9 +187,9 @@ func decodeLengthPayload(src []byte) (payload uint64, n int, err error) {
 // encodeSignedInt encodes a signed integer using the minimum bytes needed.
 // Returns the number of bytes written (1 for type code + n for value).
 func encodeSignedInt(dst []byte, v int64) int {
-	// Try small int first
+	// Try small int first (type code = value + 100)
 	if v >= -100 && v <= 100 {
-		dst[0] = byte(int8(v))
+		dst[0] = byte(v + 100)
 		return 1
 	}
 
@@ -222,9 +221,9 @@ func encodeSignedInt(dst []byte, v int64) int {
 // types would encode a value into the same number of bytes."
 // Returns the number of bytes written (1 for type code + n for value).
 func encodeUnsignedInt(dst []byte, v uint64) int {
-	// Try small int first (0-100)
+	// Try small int first (0-100, type code = value + 100)
 	if v <= 100 {
-		dst[0] = byte(v)
+		dst[0] = byte(v + 100)
 		return 1
 	}
 
@@ -253,12 +252,12 @@ func encodeUnsignedInt(dst []byte, v uint64) int {
 func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint64, n int, err error) {
 	switch {
 	case typeCode <= typeSmallIntMax:
-		// Small positive integer (0-100)
-		return int64(typeCode), uint64(typeCode), 0, nil
-
-	case typeCode >= typeSmallNegIntMin:
-		// Small negative integer (-100 to -1)
-		return int64(int8(typeCode)), 0, 0, nil
+		// Small integer (-100 to 100): value = type_code - 100
+		val := int64(typeCode) - 100
+		if val >= 0 {
+			return val, uint64(val), 0, nil
+		}
+		return val, 0, 0, nil
 
 	case typeCode >= typeUintBase && typeCode <= typeUintBase+7:
 		// Unsigned integer
@@ -386,6 +385,8 @@ func encodeString(dst []byte, s string) int {
 // decodeLongString decodes a long string (potentially chunked).
 // Returns the string bytes, bytes consumed, and any error.
 // If maxChunks > 0, returns TooManyChunksError if chunk count exceeds the limit.
+// Note: UTF-8 validation is only performed on the final assembled string,
+// not on individual chunks (chunks may split multi-byte UTF-8 sequences).
 func decodeLongString(src []byte, maxChunks int, maxLength int64) ([]byte, int, error) {
 	var result []byte
 	offset := 0
@@ -422,13 +423,9 @@ func decodeLongString(src []byte, maxChunks int, maxLength int64) ([]byte, int, 
 		chunk := src[offset : offset+int(length)]
 		offset += int(length)
 
-		// Validate UTF-8 for each chunk
-		if !utf8.Valid(chunk) {
-			return nil, 0, &InvalidUTF8Error{Offset: int64(offset - int(length))}
-		}
-
 		if result == nil && !continuation {
 			// Single chunk, no allocation needed - just return the slice
+			// UTF-8 validation will be done by the caller (processString)
 			return chunk, offset, nil
 		}
 
@@ -443,6 +440,7 @@ func decodeLongString(src []byte, maxChunks int, maxLength int64) ([]byte, int, 
 		}
 	}
 
+	// UTF-8 validation is done by the caller (processString) on the final assembled string
 	return result, offset, nil
 }
 

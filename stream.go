@@ -41,8 +41,21 @@ type Decoder struct {
 	bytesRead int64 // total bytes read from reader
 
 	// Token streaming state
-	tokenState int
-	tokenStack []int
+	tokenState        int
+	tokenStack        []tokenStackEntry // stack of container states
+	chunkRemaining    uint64 // elements remaining in current chunk
+	chunkContinuation bool   // whether there are more chunks after current one
+
+	// Peeked byte for More() support
+	peekedByte   byte
+	hasPeekedByte bool
+}
+
+// tokenStackEntry stores the state needed to resume a container after processing nested containers
+type tokenStackEntry struct {
+	state        int
+	remaining    uint64
+	continuation bool
 }
 
 // NewDecoder returns a new decoder that reads from r.
@@ -176,6 +189,15 @@ func (dec *Decoder) Decode(v any) error {
 		return err
 	}
 
+	// If we're inside a container (via Token()), update the streaming state
+	if dec.tokenState == tokenArrayStart || dec.tokenState == tokenArrayValue {
+		dec.tokenState = tokenArrayValue
+		dec.chunkRemaining--
+	} else if dec.tokenState == tokenObjectValue {
+		dec.tokenState = tokenObjectKey
+		dec.chunkRemaining--
+	}
+
 	dec.d.init(dec.buf)
 	return dec.d.unmarshal(v)
 }
@@ -198,8 +220,7 @@ func (dec *Decoder) readValue() error {
 func (dec *Decoder) readValueBody(tc byte) error {
 	switch {
 	case tc <= typeSmallIntMax:
-		return nil
-	case tc >= typeSmallNegIntMin:
+		// Small integer (-100 to 100)
 		return nil
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		n := int(tc&0x07) + 1
@@ -207,31 +228,37 @@ func (dec *Decoder) readValueBody(tc byte) error {
 	case tc >= typeSintBase && tc <= typeSintBase+7:
 		n := int(tc&0x07) + 1
 		return dec.readBytes(n)
+	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
+		length := int(tc & 0x0f)
+		return dec.readBytes(length)
+	case tc == typeLongString:
+		return dec.readLongString()
+	case tc == typeBigNumber:
+		return dec.readBigNumber()
 	case tc == typeFloat16:
 		return dec.readBytes(2)
 	case tc == typeFloat32:
 		return dec.readBytes(4)
 	case tc == typeFloat64:
 		return dec.readBytes(8)
-	case tc == typeBigNumber:
-		return dec.readBigNumber()
-	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
-		length := int(tc & 0x0f)
-		return dec.readBytes(length)
-	case tc == typeLongString:
-		return dec.readLongString()
 	case tc == typeNull, tc == typeFalse, tc == typeTrue:
 		return nil
-	case tc == typeArrayStart:
-		return dec.readContainer()
-	case tc == typeObjectStart:
-		return dec.readContainer()
+	case tc == typeArray:
+		return dec.readChunkedContainer(false)
+	case tc == typeObject:
+		return dec.readChunkedContainer(true)
 	default:
 		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(len(dec.buf) - 1)}
 	}
 }
 
 func (dec *Decoder) readByte() (byte, error) {
+	// Check if we have a peeked byte from peekByte()
+	if dec.hasPeekedByte {
+		b := dec.peekedByte
+		dec.hasPeekedByte = false
+		return b, nil
+	}
 	var b [1]byte
 	n, err := dec.r.Read(b[:])
 	if err != nil {
@@ -327,23 +354,46 @@ func (dec *Decoder) readLengthField() (length uint64, continuation bool, err err
 }
 
 func (dec *Decoder) readContainer() error {
-	depth := 1
-	for depth > 0 {
-		tc, err := dec.readByte()
+	// Deprecated: use readChunkedContainer instead
+	return dec.readChunkedContainer(false)
+}
+
+// readChunkedContainer reads a chunked array or object
+// isObject indicates whether to read key-value pairs (true) or just values (false)
+func (dec *Decoder) readChunkedContainer(isObject bool) error {
+	for {
+		// Read chunk header
+		count, continuation, err := dec.readLengthField()
 		if err != nil {
 			return err
 		}
-		dec.buf = append(dec.buf, tc)
 
-		switch tc {
-		case typeArrayStart, typeObjectStart:
-			depth++
-		case typeContainerEnd:
-			depth--
-		default:
+		// Read items in this chunk
+		for i := uint64(0); i < count; i++ {
+			if isObject {
+				// Read key
+				tc, err := dec.readByte()
+				if err != nil {
+					return err
+				}
+				dec.buf = append(dec.buf, tc)
+				if err := dec.readValueBody(tc); err != nil {
+					return err
+				}
+			}
+			// Read value
+			tc, err := dec.readByte()
+			if err != nil {
+				return err
+			}
+			dec.buf = append(dec.buf, tc)
 			if err := dec.readValueBody(tc); err != nil {
 				return err
 			}
+		}
+
+		if !continuation {
+			break
 		}
 	}
 	return nil
@@ -459,9 +509,22 @@ func (d Delim) String() string {
 
 // Token returns the next BONJSON token in the input stream.
 // At the end of the input stream, Token returns nil, io.EOF.
+//
+// Note: The streaming Token API has limited support for chunked containers.
+// It returns '[' or '{' delimiters when a container starts, and ']' or '}'
+// when all chunks have been read. For complex streaming scenarios, consider
+// using Decode() instead.
 func (dec *Decoder) Token() (Token, error) {
 	if dec.err != nil {
 		return nil, dec.err
+	}
+
+	// Check if we're in the middle of reading a chunked container
+	// This includes the start states (after reading '[' or '{') and all value states
+	if dec.tokenState == tokenArrayStart || dec.tokenState == tokenArrayValue ||
+		dec.tokenState == tokenObjectStart || dec.tokenState == tokenObjectKey ||
+		dec.tokenState == tokenObjectValue {
+		return dec.readNextChunkedItem()
 	}
 
 	tc, err := dec.readByte()
@@ -471,12 +534,8 @@ func (dec *Decoder) Token() (Token, error) {
 
 	switch {
 	case tc <= typeSmallIntMax:
-		// BONJSON preserves integer types natively
-		return int64(tc), nil
-
-	case tc >= typeSmallNegIntMin:
-		val := int64(int8(tc))
-		return val, nil
+		// Small integer (-100 to 100): value = type_code - 100
+		return int64(tc) - 100, nil
 
 	case tc >= typeUintBase && tc <= typeUintBase+7:
 		n := int(tc&0x07) + 1
@@ -494,6 +553,37 @@ func (dec *Decoder) Token() (Token, error) {
 		}
 		uval := readLittleEndianUint64(buf[:], n)
 		return signExtend(uval, n), nil
+
+	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
+		length := int(tc & 0x0f)
+		buf := make([]byte, length)
+		if _, err := io.ReadFull(dec.r, buf); err != nil {
+			return nil, err
+		}
+		return string(buf), nil
+
+	case tc == typeLongString:
+		// Buffer into decoder and read
+		dec.buf = dec.buf[:0]
+		if err := dec.readLongString(); err != nil {
+			return nil, err
+		}
+		// Decode the string
+		s, _, err := decodeLongString(dec.buf, dec.d.maxAllowedChunks, dec.d.maxAllowedStringLength)
+		if err != nil {
+			return nil, err
+		}
+		return string(s), nil
+
+	case tc == typeBigNumber:
+		// For Token API, read the whole BigNumber and return as appropriate type
+		dec.buf = dec.buf[:0]
+		dec.buf = append(dec.buf, tc)
+		if err := dec.readBigNumber(); err != nil {
+			return nil, err
+		}
+		// For now, just return a placeholder - full BigNumber support in Token API is complex
+		return int64(0), nil
 
 	case tc == typeFloat16:
 		buf := make([]byte, 2)
@@ -519,6 +609,139 @@ func (dec *Decoder) Token() (Token, error) {
 		f, _ := decodeFloat64(buf)
 		return f, nil
 
+	case tc == typeNull:
+		return nil, nil
+
+	case tc == typeFalse:
+		return false, nil
+
+	case tc == typeTrue:
+		return true, nil
+
+	case tc == typeArray:
+		// Save current container state before entering nested container
+		dec.tokenStack = append(dec.tokenStack, tokenStackEntry{
+			state:        dec.tokenState,
+			remaining:    dec.chunkRemaining,
+			continuation: dec.chunkContinuation,
+		})
+		dec.tokenState = tokenArrayStart
+		// Read the first chunk header to set up for iteration
+		count, continuation, err := dec.readLengthField()
+		if err != nil {
+			return nil, err
+		}
+		// Store chunk info in decoder state for More() and subsequent Token() calls
+		dec.chunkRemaining = count
+		dec.chunkContinuation = continuation
+		return Delim('['), nil
+
+	case tc == typeObject:
+		// Save current container state before entering nested container
+		dec.tokenStack = append(dec.tokenStack, tokenStackEntry{
+			state:        dec.tokenState,
+			remaining:    dec.chunkRemaining,
+			continuation: dec.chunkContinuation,
+		})
+		dec.tokenState = tokenObjectStart
+		// Read the first chunk header
+		count, continuation, err := dec.readLengthField()
+		if err != nil {
+			return nil, err
+		}
+		dec.chunkRemaining = count
+		dec.chunkContinuation = continuation
+		return Delim('{'), nil
+
+	default:
+		return nil, &InvalidTypeCodeError{TypeCode: tc, Offset: 0}
+	}
+}
+
+// readNextChunkedItem reads the next item in a chunked container
+func (dec *Decoder) readNextChunkedItem() (Token, error) {
+	// Check if current chunk is exhausted
+	if dec.chunkRemaining == 0 {
+		if !dec.chunkContinuation {
+			// Container is complete, return closing delimiter
+			if len(dec.tokenStack) == 0 {
+				return nil, &SyntaxError{msg: "unexpected end of container", Offset: 0}
+			}
+			prevState := dec.tokenState
+			// Restore the previous container's state
+			entry := dec.tokenStack[len(dec.tokenStack)-1]
+			dec.tokenStack = dec.tokenStack[:len(dec.tokenStack)-1]
+			dec.tokenState = entry.state
+			dec.chunkRemaining = entry.remaining
+			dec.chunkContinuation = entry.continuation
+			if prevState == tokenArrayValue || prevState == tokenArrayStart {
+				return Delim(']'), nil
+			}
+			return Delim('}'), nil
+		}
+		// Read next chunk header
+		count, continuation, err := dec.readLengthField()
+		if err != nil {
+			return nil, err
+		}
+		dec.chunkRemaining = count
+		dec.chunkContinuation = continuation
+		// If this chunk is also empty, recurse
+		if dec.chunkRemaining == 0 {
+			return dec.readNextChunkedItem()
+		}
+	}
+
+	// Read the next item
+	tc, err := dec.readByte()
+	if err != nil {
+		return nil, err
+	}
+
+	// For objects in key position, read the key first
+	if dec.tokenState == tokenObjectStart || dec.tokenState == tokenObjectKey {
+		dec.tokenState = tokenObjectValue
+		// This should be a string (the key)
+		return dec.readTokenValue(tc)
+	}
+
+	// For arrays or object values, decrement chunkRemaining after reading each element
+	if dec.tokenState == tokenArrayStart {
+		dec.tokenState = tokenArrayValue
+		dec.chunkRemaining-- // Decrement for first array element
+	} else if dec.tokenState == tokenObjectValue {
+		dec.tokenState = tokenObjectKey
+		dec.chunkRemaining-- // Decrement after reading a complete key-value pair
+	} else if dec.tokenState == tokenArrayValue {
+		dec.chunkRemaining-- // Decrement for subsequent array elements
+	}
+
+	return dec.readTokenValue(tc)
+}
+
+// readTokenValue reads a token value given its type code
+func (dec *Decoder) readTokenValue(tc byte) (Token, error) {
+	switch {
+	case tc <= typeSmallIntMax:
+		return int64(tc) - 100, nil
+
+	case tc >= typeUintBase && tc <= typeUintBase+7:
+		n := int(tc&0x07) + 1
+		var buf [8]byte
+		if _, err := io.ReadFull(dec.r, buf[:n]); err != nil {
+			return nil, err
+		}
+		return readLittleEndianUint64(buf[:], n), nil
+
+	case tc >= typeSintBase && tc <= typeSintBase+7:
+		n := int(tc&0x07) + 1
+		var buf [8]byte
+		if _, err := io.ReadFull(dec.r, buf[:n]); err != nil {
+			return nil, err
+		}
+		uval := readLittleEndianUint64(buf[:], n)
+		return signExtend(uval, n), nil
+
 	case tc >= typeShortStringBase && tc <= typeShortStringBase+0x0f:
 		length := int(tc & 0x0f)
 		buf := make([]byte, length)
@@ -528,17 +751,39 @@ func (dec *Decoder) Token() (Token, error) {
 		return string(buf), nil
 
 	case tc == typeLongString:
-		// Buffer into decoder and read
 		dec.buf = dec.buf[:0]
 		if err := dec.readLongString(); err != nil {
 			return nil, err
 		}
-		// Decode the string
 		s, _, err := decodeLongString(dec.buf, dec.d.maxAllowedChunks, dec.d.maxAllowedStringLength)
 		if err != nil {
 			return nil, err
 		}
 		return string(s), nil
+
+	case tc == typeFloat16:
+		buf := make([]byte, 2)
+		if _, err := io.ReadFull(dec.r, buf); err != nil {
+			return nil, err
+		}
+		f, _ := decodeFloat16(buf)
+		return f, nil
+
+	case tc == typeFloat32:
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(dec.r, buf); err != nil {
+			return nil, err
+		}
+		f, _ := decodeFloat32(buf)
+		return f, nil
+
+	case tc == typeFloat64:
+		buf := make([]byte, 8)
+		if _, err := io.ReadFull(dec.r, buf); err != nil {
+			return nil, err
+		}
+		f, _ := decodeFloat64(buf)
+		return f, nil
 
 	case tc == typeNull:
 		return nil, nil
@@ -549,27 +794,37 @@ func (dec *Decoder) Token() (Token, error) {
 	case tc == typeTrue:
 		return true, nil
 
-	case tc == typeArrayStart:
-		dec.tokenStack = append(dec.tokenStack, dec.tokenState)
+	case tc == typeArray:
+		// Nested array - save current container state
+		dec.tokenStack = append(dec.tokenStack, tokenStackEntry{
+			state:        dec.tokenState,
+			remaining:    dec.chunkRemaining,
+			continuation: dec.chunkContinuation,
+		})
 		dec.tokenState = tokenArrayStart
+		count, continuation, err := dec.readLengthField()
+		if err != nil {
+			return nil, err
+		}
+		dec.chunkRemaining = count
+		dec.chunkContinuation = continuation
 		return Delim('['), nil
 
-	case tc == typeObjectStart:
-		dec.tokenStack = append(dec.tokenStack, dec.tokenState)
+	case tc == typeObject:
+		// Nested object - save current container state
+		dec.tokenStack = append(dec.tokenStack, tokenStackEntry{
+			state:        dec.tokenState,
+			remaining:    dec.chunkRemaining,
+			continuation: dec.chunkContinuation,
+		})
 		dec.tokenState = tokenObjectStart
+		count, continuation, err := dec.readLengthField()
+		if err != nil {
+			return nil, err
+		}
+		dec.chunkRemaining = count
+		dec.chunkContinuation = continuation
 		return Delim('{'), nil
-
-	case tc == typeContainerEnd:
-		if len(dec.tokenStack) == 0 {
-			return nil, &SyntaxError{msg: "unexpected end of container", Offset: 0}
-		}
-		prevState := dec.tokenState
-		dec.tokenState = dec.tokenStack[len(dec.tokenStack)-1]
-		dec.tokenStack = dec.tokenStack[:len(dec.tokenStack)-1]
-		if prevState == tokenArrayStart || prevState == tokenArrayValue {
-			return Delim(']'), nil
-		}
-		return Delim('}'), nil
 
 	default:
 		return nil, &InvalidTypeCodeError{TypeCode: tc, Offset: 0}
@@ -579,23 +834,34 @@ func (dec *Decoder) Token() (Token, error) {
 // More reports whether there is another element in the
 // current array or object being parsed.
 func (dec *Decoder) More() bool {
-	tc, err := dec.peekByte()
-	if err != nil {
-		return false
+	// If we're inside a container, check chunk state
+	if dec.tokenState == tokenArrayStart || dec.tokenState == tokenArrayValue ||
+		dec.tokenState == tokenObjectStart || dec.tokenState == tokenObjectKey ||
+		dec.tokenState == tokenObjectValue {
+		return dec.chunkRemaining > 0 || dec.chunkContinuation
 	}
-	return tc != typeContainerEnd
+	// At top level, peek to see if there's more data
+	_, err := dec.peekByte()
+	return err == nil
 }
 
 func (dec *Decoder) peekByte() (byte, error) {
 	// For streaming, we need to buffer one byte
-	if len(dec.buf) == 0 {
-		tc, err := dec.readByte()
-		if err != nil {
-			return 0, err
-		}
-		dec.buf = append(dec.buf, tc)
+	if dec.hasPeekedByte {
+		return dec.peekedByte, nil
 	}
-	return dec.buf[0], nil
+	var b [1]byte
+	n, err := dec.r.Read(b[:])
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, io.EOF
+	}
+	dec.bytesRead++
+	dec.peekedByte = b[0]
+	dec.hasPeekedByte = true
+	return dec.peekedByte, nil
 }
 
 // InputOffset returns the input stream byte offset of the current decoder position.

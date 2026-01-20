@@ -109,15 +109,18 @@ func TestAttack_IntegerLengthMismatch(t *testing.T) {
 // Container Termination Attacks
 // ============================================================================
 
-func TestAttack_MissingContainerEnd(t *testing.T) {
+func TestAttack_TruncatedContainer(t *testing.T) {
+	// In chunked format, test truncated containers (missing chunk data or elements)
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{"array_no_end", []byte{typeArrayStart, 0x01}},
-		{"object_no_end", []byte{typeObjectStart, typeShortStringBase + 1, 'a', 0x01}},
-		{"nested_array_no_end", []byte{typeArrayStart, typeArrayStart, 0x01, typeContainerEnd}},
-		{"nested_object_no_end", []byte{typeObjectStart, typeShortStringBase + 1, 'a', typeObjectStart, typeShortStringBase + 1, 'b', 0x01, typeContainerEnd}},
+		{"array_no_chunk", []byte{typeArray}},                                         // no chunk header
+		{"array_truncated_elements", []byte{typeArray, 0x08}},                         // claims 2 elements, has none
+		{"object_no_chunk", []byte{typeObject}},                                       // no chunk header
+		{"object_truncated_pairs", []byte{typeObject, 0x04}},                          // claims 1 pair, has none
+		{"nested_array_truncated", []byte{typeArray, 0x04, typeArray}},                // nested array with no chunk header
+		{"nested_object_truncated", []byte{typeObject, 0x04, typeShortStringBase + 1, 'a', typeObject}}, // nested object missing chunk
 	}
 
 	for _, tt := range tests {
@@ -125,29 +128,28 @@ func TestAttack_MissingContainerEnd(t *testing.T) {
 			var v any
 			err := Unmarshal(tt.data, &v)
 			if err == nil {
-				t.Error("expected error for missing container end")
+				t.Error("expected error for truncated container")
 			}
 		})
 	}
 }
 
-func TestAttack_ExtraContainerEnd(t *testing.T) {
-	// Extra container end markers should cause an error
+func TestAttack_InvalidReservedTypeCodes(t *testing.T) {
+	// Test that reserved type codes are rejected
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{"standalone_end", []byte{typeContainerEnd}},
-		{"double_end", []byte{typeArrayStart, typeContainerEnd, typeContainerEnd}},
+		{"reserved_0xc9", []byte{0xc9}},
+		{"reserved_0xfa", []byte{0xfa}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var v any
 			err := Unmarshal(tt.data, &v)
-			// First case should be invalid type code, second should be trailing data
 			if err == nil {
-				t.Error("expected error for extra container end")
+				t.Error("expected error for reserved type code")
 			}
 		})
 	}
@@ -159,15 +161,16 @@ func TestAttack_ExtraContainerEnd(t *testing.T) {
 
 func TestAttack_NonStringObjectKey(t *testing.T) {
 	// Object keys must be strings - try various other types
+	// New chunked format: typeObject + chunk_header + key + value
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{"int_key", []byte{typeObjectStart, 0x01, 0x02, typeContainerEnd}},
-		{"null_key", []byte{typeObjectStart, typeNull, 0x01, typeContainerEnd}},
-		{"bool_key", []byte{typeObjectStart, typeTrue, 0x01, typeContainerEnd}},
-		{"array_key", []byte{typeObjectStart, typeArrayStart, typeContainerEnd, 0x01, typeContainerEnd}},
-		{"float_key", []byte{typeObjectStart, typeFloat16, 0x00, 0x00, 0x01, typeContainerEnd}},
+		{"int_key", []byte{typeObject, 0x04, 0x65, 0x66}},              // int key (1), int value (2) - using new small int encoding
+		{"null_key", []byte{typeObject, 0x04, typeNull, 0x65}},         // null key
+		{"bool_key", []byte{typeObject, 0x04, typeTrue, 0x65}},         // bool key
+		{"array_key", []byte{typeObject, 0x04, typeArray, 0x00, 0x65}}, // empty array key, int value
+		{"float_key", []byte{typeObject, 0x04, typeFloat16, 0x00, 0x00, 0x65}}, // float key
 	}
 
 	for _, tt := range tests {
@@ -183,6 +186,7 @@ func TestAttack_NonStringObjectKey(t *testing.T) {
 
 func TestAttack_DuplicateKeyVariations(t *testing.T) {
 	// Various ways to try duplicate keys
+	// New chunked format: typeObject + chunk_header + pairs
 	tests := []struct {
 		name string
 		data []byte
@@ -190,19 +194,19 @@ func TestAttack_DuplicateKeyVariations(t *testing.T) {
 		{
 			"exact_duplicate",
 			[]byte{
-				typeObjectStart,
-				typeShortStringBase + 3, 'f', 'o', 'o', 0x01,
-				typeShortStringBase + 3, 'f', 'o', 'o', 0x02,
-				typeContainerEnd,
+				typeObject,
+				0x08, // 2 pairs, no continuation
+				typeShortStringBase + 3, 'f', 'o', 'o', 0x65, // "foo": 1
+				typeShortStringBase + 3, 'f', 'o', 'o', 0x66, // "foo": 2
 			},
 		},
 		{
 			"empty_key_duplicate",
 			[]byte{
-				typeObjectStart,
-				typeShortStringBase, 0x01, // empty string key
-				typeShortStringBase, 0x02, // empty string key again
-				typeContainerEnd,
+				typeObject,
+				0x08, // 2 pairs
+				typeShortStringBase, 0x65, // "": 1
+				typeShortStringBase, 0x66, // "": 2
 			},
 		},
 		{
@@ -210,18 +214,18 @@ func TestAttack_DuplicateKeyVariations(t *testing.T) {
 			func() []byte {
 				key := strings.Repeat("x", 20)
 				var buf bytes.Buffer
-				buf.WriteByte(typeObjectStart)
+				buf.WriteByte(typeObject)
+				buf.WriteByte(0x08) // 2 pairs, no continuation
 				// First key-value
 				buf.WriteByte(typeLongString)
-				buf.WriteByte(byte((len(key) << 1) | 0x01))
+				buf.WriteByte(byte((len(key) << 1) << 1)) // length field: (20 << 1) << 1 = 80
 				buf.WriteString(key)
-				buf.WriteByte(0x01)
+				buf.WriteByte(0x65) // value 1
 				// Duplicate key-value
 				buf.WriteByte(typeLongString)
-				buf.WriteByte(byte((len(key) << 1) | 0x01))
+				buf.WriteByte(byte((len(key) << 1) << 1))
 				buf.WriteString(key)
-				buf.WriteByte(0x02)
-				buf.WriteByte(typeContainerEnd)
+				buf.WriteByte(0x66) // value 2
 				return buf.Bytes()
 			}(),
 		},
@@ -408,18 +412,18 @@ func TestAttack_StringChunkingBomb(t *testing.T) {
 func TestAttack_DeepNestingArrays(t *testing.T) {
 	// Create arrays nested to various depths
 	// Default max depth per BONJSON spec is 512
+	// New chunked format: typeArray + chunk_header(count=1) for each level
 	depths := []int{100, 500, 512, 513, 1000}
 
 	for _, depth := range depths {
 		t.Run(fmt.Sprintf("depth_%04d", depth), func(t *testing.T) {
 			var buf bytes.Buffer
 			for i := 0; i < depth; i++ {
-				buf.WriteByte(typeArrayStart)
+				buf.WriteByte(typeArray)
+				buf.WriteByte(0x04) // 1 element, no continuation
 			}
 			buf.WriteByte(typeNull)
-			for i := 0; i < depth; i++ {
-				buf.WriteByte(typeContainerEnd)
-			}
+			// No end markers needed in chunked format
 
 			var v any
 			err := Unmarshal(buf.Bytes(), &v)
@@ -441,18 +445,18 @@ func TestAttack_DeepNestingArrays(t *testing.T) {
 
 func TestAttack_DeepNestingObjects(t *testing.T) {
 	// Create objects nested to excessive depth
+	// New chunked format: typeObject + chunk_header(count=1) + key + value
 	depth := 2000
 	var buf bytes.Buffer
 
 	for i := 0; i < depth; i++ {
-		buf.WriteByte(typeObjectStart)
+		buf.WriteByte(typeObject)
+		buf.WriteByte(0x04) // 1 pair, no continuation
 		buf.WriteByte(typeShortStringBase + 1)
 		buf.WriteByte('k')
 	}
 	buf.WriteByte(typeNull)
-	for i := 0; i < depth; i++ {
-		buf.WriteByte(typeContainerEnd)
-	}
+	// No end markers needed in chunked format
 
 	var v any
 	err := Unmarshal(buf.Bytes(), &v)
@@ -463,20 +467,26 @@ func TestAttack_DeepNestingObjects(t *testing.T) {
 
 func TestAttack_WideContainer(t *testing.T) {
 	// Very wide array (many elements)
+	// New chunked format: typeArray + chunk_header(count) + elements
 	var buf bytes.Buffer
-	buf.WriteByte(typeArrayStart)
-	for i := 0; i < 10000; i++ {
-		buf.WriteByte(byte(i % 101)) // Small ints
+	count := 10000
+	buf.WriteByte(typeArray)
+	// Encode chunk header with count and no continuation
+	var scratch [9]byte
+	n := encodeLengthField(scratch[:], uint64(count), false)
+	buf.Write(scratch[:n])
+	for i := 0; i < count; i++ {
+		// Small int encoding: value + 100 (values 0-100 map to type codes 100-200)
+		buf.WriteByte(byte((i % 101) + 100))
 	}
-	buf.WriteByte(typeContainerEnd)
 
 	var v []int
 	err := Unmarshal(buf.Bytes(), &v)
 	if err != nil {
 		t.Errorf("wide array should succeed: %v", err)
 	}
-	if len(v) != 10000 {
-		t.Errorf("expected 10000 elements, got %d", len(v))
+	if len(v) != count {
+		t.Errorf("expected %d elements, got %d", count, len(v))
 	}
 }
 
@@ -490,15 +500,17 @@ func TestAttack_TruncatedData(t *testing.T) {
 		data []byte
 	}{
 		{"empty", []byte{}},
-		{"just_array_start", []byte{typeArrayStart}},
-		{"just_object_start", []byte{typeObjectStart}},
+		{"just_array_start", []byte{typeArray}},
+		{"just_object_start", []byte{typeObject}},
 		{"float16_truncated", []byte{typeFloat16, 0x00}},
 		{"float32_truncated", []byte{typeFloat32, 0x00, 0x00}},
 		{"float64_truncated", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00}},
 		{"string_header_only", []byte{typeLongString}},
 		{"bignumber_header_only", []byte{typeBigNumber}},
-		{"array_with_truncated_value", []byte{typeArrayStart, typeFloat64, 0x00}},
-		{"object_with_truncated_key", []byte{typeObjectStart, typeShortStringBase + 5, 'h', 'e'}},
+		// Array with 1 element chunk but truncated value: typeArray + chunk(1, no-cont) + truncated float64
+		{"array_with_truncated_value", []byte{typeArray, 0x04, typeFloat64, 0x00}},
+		// Object with 1 pair chunk but truncated key: typeObject + chunk(1, no-cont) + truncated string
+		{"object_with_truncated_key", []byte{typeObject, 0x04, typeShortStringBase + 5, 'h', 'e'}},
 	}
 
 	for _, tt := range tests {
@@ -521,12 +533,14 @@ func TestAttack_TrailingGarbage(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"int_with_trailing", []byte{0x01, 0x02}},
+		{"int_with_trailing", []byte{0x65, 0x02}}, // small int 1 (0x64+1) + trailing
 		{"null_with_trailing", []byte{typeNull, 0x00}},
 		{"bool_with_trailing", []byte{typeTrue, 0xff}},
 		{"string_with_trailing", []byte{typeShortStringBase + 1, 'a', 0x00}},
-		{"array_with_trailing", []byte{typeArrayStart, typeContainerEnd, typeNull}},
-		{"object_with_trailing", []byte{typeObjectStart, typeContainerEnd, 0x01}},
+		// Empty array (chunk count=0, no continuation) + trailing null
+		{"array_with_trailing", []byte{typeArray, 0x00, typeNull}},
+		// Empty object (chunk count=0, no continuation) + trailing byte
+		{"object_with_trailing", []byte{typeObject, 0x00, 0x01}},
 	}
 
 	for _, tt := range tests {
@@ -591,10 +605,12 @@ func TestAttack_TypeConfusion(t *testing.T) {
 		data   []byte
 		target any
 	}{
-		{"int_into_string", []byte{0x2a}, new(string)},
+		{"int_into_string", []byte{0x6a}, new(string)}, // small int 6 (0x64+6)
 		{"string_into_int", []byte{typeShortStringBase + 3, 'f', 'o', 'o'}, new(int)},
-		{"array_into_string", []byte{typeArrayStart, typeContainerEnd}, new(string)},
-		{"object_into_slice", []byte{typeObjectStart, typeContainerEnd}, new([]int)},
+		// Empty array (chunk count=0, no continuation)
+		{"array_into_string", []byte{typeArray, 0x00}, new(string)},
+		// Empty object (chunk count=0, no continuation)
+		{"object_into_slice", []byte{typeObject, 0x00}, new([]int)},
 		{"bool_into_int", []byte{typeTrue}, new(int)},
 		{"null_into_int", []byte{typeNull}, new(int)},
 	}
@@ -664,11 +680,12 @@ func TestAttack_ValidWithMalicious(t *testing.T) {
 	}{
 		{"empty", []byte{}, false},
 		{"valid_null", []byte{typeNull}, true},
-		{"valid_int", []byte{0x01}, true},
+		{"valid_int", []byte{0x65}, true}, // small int 1 (0x64+1)
 		{"valid_string", []byte{typeShortStringBase + 2, 'h', 'i'}, true},
 		{"truncated_float", []byte{typeFloat64, 0x00}, false},
-		{"reserved_type", []byte{0x65}, false},
-		{"missing_container_end", []byte{typeArrayStart, 0x01}, false},
+		{"reserved_type", []byte{0xc9}, false}, // reserved range 0xc9-0xcf
+		// Truncated array: typeArray + partial chunk (count=1 but no elements)
+		{"truncated_container", []byte{typeArray, 0x04}, false},
 		{"trailing_data", []byte{typeNull, 0x00}, false},
 		{"invalid_utf8", []byte{typeShortStringBase + 1, 0x80}, false},
 	}

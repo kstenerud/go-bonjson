@@ -52,14 +52,15 @@ func TestDecodeBasicTypes(t *testing.T) {
 		// Null
 		{"null", []byte{typeNull}, new(any), nil},
 
-		// Small integers (0-100)
-		{"int_0", []byte{0x00}, new(int), 0},
-		{"int_1", []byte{0x01}, new(int), 1},
-		{"int_100", []byte{0x64}, new(int), 100},
+		// Small integers: type_code = value + 100
+		// 0 = 0x64, 1 = 0x65, 100 = 0xc8, -1 = 0x63, -100 = 0x00
+		{"int_0", []byte{0x64}, new(int), 0},
+		{"int_1", []byte{0x65}, new(int), 1},
+		{"int_100", []byte{0xc8}, new(int), 100},
 
 		// Small negative integers (-1 to -100)
-		{"int_-1", []byte{0xff}, new(int), -1},
-		{"int_-100", []byte{0x9c}, new(int), -100},
+		{"int_-1", []byte{0x63}, new(int), -1},
+		{"int_-100", []byte{0x00}, new(int), -100},
 
 		// Short strings
 		{"empty_string", []byte{typeShortStringBase}, new(string), ""},
@@ -185,7 +186,8 @@ func TestUnmarshalWithByteCount(t *testing.T) {
 		wantConsumed int
 	}{
 		// Values without trailing data - should succeed
-		{"int_no_trailing", []byte{0x0a}, new(int), 10, 1},
+		// Small int 10 = 0x64 + 10 = 0x6e
+		{"int_no_trailing", []byte{0x6e}, new(int), 10, 1},
 		{"null_no_trailing", []byte{typeNull}, new(any), nil, 1},
 		{"true_no_trailing", []byte{typeTrue}, new(bool), true, 1},
 		{"string_no_trailing", []byte{typeShortStringBase + 2, 'h', 'i'}, new(string), "hi", 3},
@@ -210,7 +212,8 @@ func TestUnmarshalWithByteCount(t *testing.T) {
 
 func TestUnmarshalWithByteCountReturnsConsumedOnTrailingData(t *testing.T) {
 	// UnmarshalWithByteCount should return error on trailing data, but also return consumed count
-	data := []byte{0x05, 0x99, 0x88, 0x77} // int 5 followed by garbage
+	// Small int 5 = 0x64 + 5 = 0x69
+	data := []byte{0x69, 0x99, 0x88, 0x77} // int 5 followed by garbage
 	var v int
 	consumed, err := UnmarshalWithByteCount(data, &v)
 	if err == nil {
@@ -257,8 +260,8 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 	// Test all error conditions that can occur during partial decoding
 
 	t.Run("InvalidTypeCodeError", func(t *testing.T) {
-		// Reserved type codes 0x65-0x67 and 0x90-0x98 are invalid
-		data := []byte{0x65}
+		// Reserved type codes 0xc9-0xcf and 0xfa-0xff are invalid
+		data := []byte{0xc9}
 		var v any
 		n, err := UnmarshalWithByteCount(data, &v)
 		if err == nil {
@@ -319,12 +322,15 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 	})
 
 	t.Run("DuplicateKeyError", func(t *testing.T) {
-		// Object with duplicate keys
+		// Object with duplicate keys - new chunked format:
+		// typeObject + length_field(count=2) + pairs
+		// length_field for count=2: (2 << 1) << 1 = 8 = 0x08
+		// Note: small int values use new encoding: value + 100
 		data := []byte{
-			typeObjectStart,
-			typeShortStringBase + 1, 'a', 0x01, // "a": 1
-			typeShortStringBase + 1, 'a', 0x02, // "a": 2 (duplicate)
-			typeContainerEnd,
+			typeObject,
+			0x08, // chunk header: 2 pairs, no continuation
+			typeShortStringBase + 1, 'a', 0x65, // "a": 1 (1+100=0x65)
+			typeShortStringBase + 1, 'a', 0x66, // "a": 2 (duplicate) (2+100=0x66)
 		}
 		var v map[string]int
 		n, err := UnmarshalWithByteCount(data, &v)
@@ -340,14 +346,14 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 
 	t.Run("MaxDepthError", func(t *testing.T) {
 		// Create deeply nested arrays exceeding default max depth
+		// New format: typeArray + chunk_header(count=1) + nested_array...
 		var buf bytes.Buffer
 		for i := 0; i < 1001; i++ {
-			buf.WriteByte(typeArrayStart)
+			buf.WriteByte(typeArray)
+			buf.WriteByte(0x04) // chunk header: 1 element, no continuation ((1 << 1) << 1 = 4)
 		}
 		buf.WriteByte(typeNull)
-		for i := 0; i < 1001; i++ {
-			buf.WriteByte(typeContainerEnd)
-		}
+		// No end markers needed in chunked format
 		var v any
 		n, err := UnmarshalWithByteCount(buf.Bytes(), &v)
 		if err == nil {
@@ -378,10 +384,11 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 
 	t.Run("SyntaxError_NonStringKey", func(t *testing.T) {
 		// Object with non-string key
+		// New format: typeObject + chunk_header(count=1) + key + value
 		data := []byte{
-			typeObjectStart,
-			0x05, 0x01, // int key (invalid)
-			typeContainerEnd,
+			typeObject,
+			0x04,       // chunk header: 1 pair, no continuation
+			0x69, 0x65, // int key (5 in new encoding: 5+100=105=0x69), then int value 1 (1+100=0x65)
 		}
 		var v map[string]int
 		n, err := UnmarshalWithByteCount(data, &v)
@@ -953,7 +960,7 @@ func TestDecodeTruncatedData(t *testing.T) {
 		{"truncated_uint", []byte{typeUintBase + 3, 0x01, 0x02}},        // needs 4 bytes
 		{"truncated_float64", []byte{typeFloat64, 0x01, 0x02}},          // needs 8 bytes
 		{"truncated_string", []byte{typeShortStringBase + 5, 'h', 'e'}}, // needs 5 bytes
-		{"truncated_array", []byte{typeArrayStart}},                     // no end marker
+		{"truncated_array", []byte{typeArray}},                          // no chunk header
 	}
 
 	for _, tt := range tests {
@@ -972,15 +979,16 @@ func TestDecodeTruncatedData(t *testing.T) {
 // ============================================================================
 
 func TestDecodeInvalidTypeCode(t *testing.T) {
+	// New reserved ranges: 0xc9-0xcf and 0xfa-0xff
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{"reserved_0x65", []byte{0x65}},
-		{"reserved_0x66", []byte{0x66}},
-		{"reserved_0x67", []byte{0x67}},
-		{"reserved_0x90", []byte{0x90}},
-		{"reserved_0x98", []byte{0x98}},
+		{"reserved_0xc9", []byte{0xc9}},
+		{"reserved_0xca", []byte{0xca}},
+		{"reserved_0xcf", []byte{0xcf}},
+		{"reserved_0xfa", []byte{0xfa}},
+		{"reserved_0xff", []byte{0xff}},
 	}
 
 	for _, tt := range tests {
@@ -2724,18 +2732,18 @@ func TestErrorTypeCompatibility(t *testing.T) {
 		}
 	})
 
-	t.Run("unclosed_container_error", func(t *testing.T) {
-		// Array start with no end
-		data := []byte{typeArrayStart}
+	t.Run("truncated_container_error", func(t *testing.T) {
+		// Array type code with no chunk header - truncated data
+		data := []byte{typeArray}
 		var v any
 		err := Unmarshal(data, &v)
 		if err == nil {
 			t.Fatal("expected error")
 		}
-		// BONJSON uses UnclosedContainerError for this case
-		var uce *UnclosedContainerError
-		if !errors.As(err, &uce) {
-			t.Errorf("expected UnclosedContainerError for unclosed array, got %T: %v", err, err)
+		// In chunked format, missing chunk header is a TruncatedDataError
+		var tde *TruncatedDataError
+		if !errors.As(err, &tde) {
+			t.Errorf("expected TruncatedDataError for truncated array, got %T: %v", err, err)
 		}
 	})
 
@@ -2860,14 +2868,14 @@ func TestPointerFieldCompatibility(t *testing.T) {
 func TestErrorOffsets(t *testing.T) {
 	t.Run("duplicate_key_offset", func(t *testing.T) {
 		// Object with duplicate key: {"a":1,"a":2}
-		// First key at offset 1, second key at offset ~6
+		// New chunked format: typeObject + chunk_header + pairs
 		data := []byte{
-			typeObjectStart,
+			typeObject,
+			0x08, // chunk header: 2 pairs, no continuation
 			typeShortStringBase + 1, 'a', // key "a"
-			0x01, // value 1
+			0x65, // value 1 (1+100=0x65)
 			typeShortStringBase + 1, 'a', // duplicate key "a"
-			0x02, // value 2
-			typeContainerEnd,
+			0x66, // value 2 (2+100=0x66)
 		}
 		var v any
 		err := Unmarshal(data, &v)
@@ -2887,8 +2895,9 @@ func TestErrorOffsets(t *testing.T) {
 	})
 
 	t.Run("truncated_data_offset", func(t *testing.T) {
-		// Array at offset 0, truncated integer starting at offset 1
-		data := []byte{typeArrayStart, typeUintBase + 1} // array with incomplete 2-byte uint
+		// Array with truncated element
+		// New format: typeArray + chunk_header(count=1) + truncated_uint
+		data := []byte{typeArray, 0x04, typeUintBase + 1} // array with incomplete 2-byte uint
 		var v any
 		err := Unmarshal(data, &v)
 		if err == nil {
@@ -2908,7 +2917,8 @@ func TestErrorOffsets(t *testing.T) {
 
 	t.Run("invalid_type_code_offset", func(t *testing.T) {
 		// Invalid type code at offset 0
-		data := []byte{0x65} // reserved type code
+		// New reserved range: 0xc9-0xcf
+		data := []byte{0xc9} // reserved type code
 		var v any
 		err := Unmarshal(data, &v)
 		if err == nil {
@@ -2918,8 +2928,8 @@ func TestErrorOffsets(t *testing.T) {
 		if !errors.As(err, &itce) {
 			t.Fatalf("expected InvalidTypeCodeError, got %T", err)
 		}
-		if itce.TypeCode != 0x65 {
-			t.Errorf("expected TypeCode = 0x65, got 0x%02x", itce.TypeCode)
+		if itce.TypeCode != 0xc9 {
+			t.Errorf("expected TypeCode = 0xc9, got 0x%02x", itce.TypeCode)
 		}
 		if itce.Offset != 0 {
 			t.Errorf("expected Offset = 0, got %d", itce.Offset)
@@ -2927,9 +2937,14 @@ func TestErrorOffsets(t *testing.T) {
 	})
 
 	t.Run("max_depth_offset", func(t *testing.T) {
-		// Nested arrays that exceed depth
-		data := []byte{typeArrayStart, typeArrayStart, typeArrayStart, 0x01,
-			typeContainerEnd, typeContainerEnd, typeContainerEnd}
+		// Nested arrays that exceed depth (new chunked format)
+		// Each nested array: typeArray + chunk_header(count=1)
+		data := []byte{
+			typeArray, 0x04, // outer array with 1 element
+			typeArray, 0x04, // nested array with 1 element
+			typeArray, 0x04, // innermost array with 1 element
+			0x65, // value 1 (1+100=0x65)
+		}
 		dec := NewDecoder(bytes.NewReader(data))
 		dec.SetMaxDepth(2)
 		var v any

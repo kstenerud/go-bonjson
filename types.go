@@ -26,59 +26,53 @@ package bonjson
 
 // Type codes for BONJSON encoding
 const (
-	// Small integers 0-100 (type codes 0x00-0x64)
-	typeSmallIntMin = 0x00
-	typeSmallIntMax = 0x64 // 100
+	// Small integers -100 to 100 (type codes 0x00-0xc8)
+	// Value = type_code - 100
+	typeSmallIntMin = 0x00 // -100
+	typeSmallIntMax = 0xc8 // 100
 
-	// Reserved (0x65-0x67)
+	// Reserved (0xc9-0xcf)
 
-	// Long string (0x68)
-	typeLongString = 0x68
+	// Unsigned integers (0xd0-0xd7) - n bytes where n = (typecode & 0x07) + 1
+	typeUintBase = 0xd0
 
-	// Big number (0x69)
-	typeBigNumber = 0x69
+	// Signed integers (0xd8-0xdf) - n bytes where n = (typecode & 0x07) + 1
+	typeSintBase = 0xd8
 
-	// 16-bit bfloat16 (0x6a)
-	typeFloat16 = 0x6a
+	// Short strings (0xe0-0xef) - n bytes where n = (typecode & 0x0f)
+	typeShortStringBase = 0xe0
 
-	// 32-bit float (0x6b)
-	typeFloat32 = 0x6b
+	// Long string (0xf0)
+	typeLongString = 0xf0
 
-	// 64-bit float (0x6c)
-	typeFloat64 = 0x6c
+	// Big number (0xf1)
+	typeBigNumber = 0xf1
 
-	// Null (0x6d)
-	typeNull = 0x6d
+	// 16-bit bfloat16 (0xf2)
+	typeFloat16 = 0xf2
 
-	// Boolean false (0x6e)
-	typeFalse = 0x6e
+	// 32-bit float (0xf3)
+	typeFloat32 = 0xf3
 
-	// Boolean true (0x6f)
-	typeTrue = 0x6f
+	// 64-bit float (0xf4)
+	typeFloat64 = 0xf4
 
-	// Unsigned integers (0x70-0x77) - n bytes where n = (typecode & 0x07) + 1
-	typeUintBase = 0x70
+	// Null (0xf5)
+	typeNull = 0xf5
 
-	// Signed integers (0x78-0x7f) - n bytes where n = (typecode & 0x07) + 1
-	typeSintBase = 0x78
+	// Boolean false (0xf6)
+	typeFalse = 0xf6
 
-	// Short strings (0x80-0x8f) - n bytes where n = (typecode & 0x0f)
-	typeShortStringBase = 0x80
+	// Boolean true (0xf7)
+	typeTrue = 0xf7
 
-	// Reserved (0x90-0x98)
+	// Array (0xf8) - followed by element chunks
+	typeArray = 0xf8
 
-	// Array start (0x99)
-	typeArrayStart = 0x99
+	// Object (0xf9) - followed by pair chunks
+	typeObject = 0xf9
 
-	// Object start (0x9a)
-	typeObjectStart = 0x9a
-
-	// Container end (0x9b)
-	typeContainerEnd = 0x9b
-
-	// Small negative integers -100 to -1 (type codes 0x9c-0xff)
-	typeSmallNegIntMin = 0x9c // -100
-	typeSmallNegIntMax = 0xff // -1
+	// Reserved (0xfa-0xff)
 )
 
 // Maximum values for small integers encoded in the type code itself

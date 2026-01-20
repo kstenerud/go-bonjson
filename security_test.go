@@ -58,19 +58,21 @@ func TestNULCharacterAllowed(t *testing.T) {
 // ============================================================================
 
 func TestMaxDepthConfigurable(t *testing.T) {
-	// Create moderately nested arrays
+	// Create moderately nested arrays using chunked format
 	depth := 50
 	var buf bytes.Buffer
 
-	for i := 0; i < depth; i++ {
-		buf.WriteByte(typeArrayStart)
+	// Each nested array except the innermost contains one element (another array)
+	for i := 0; i < depth-1; i++ {
+		buf.WriteByte(typeArray)
+		buf.WriteByte(0x04) // chunk: count=1, no continuation
 	}
+	// Innermost array contains just null
+	buf.WriteByte(typeArray)
+	buf.WriteByte(0x04) // chunk: count=1, no continuation
 	buf.WriteByte(typeNull)
-	for i := 0; i < depth; i++ {
-		buf.WriteByte(typeContainerEnd)
-	}
 
-	// With default depth (1000), this should succeed
+	// With default depth (512), this should succeed
 	var v any
 	if err := Unmarshal(buf.Bytes(), &v); err != nil {
 		t.Errorf("depth %d should be allowed: %v", depth, err)
@@ -247,16 +249,16 @@ func TestInvalidUTF8ModeWithMultipleInvalidBytes(t *testing.T) {
 // ============================================================================
 
 func TestDuplicateKeyModeKeepFirst(t *testing.T) {
-	// Object: {"a": 1, "a": 2}
+	// Object: {"a": 1, "a": 2} - 2 pairs with duplicate key
 	var buf bytes.Buffer
-	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeObject)
+	buf.WriteByte(0x08) // chunk: count=2, no continuation
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x01) // value 1
+	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x02) // value 2
-	buf.WriteByte(typeContainerEnd)
+	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
 	dec.SetDuplicateKeyMode(DupKeyKeepFirst)
@@ -273,16 +275,16 @@ func TestDuplicateKeyModeKeepFirst(t *testing.T) {
 }
 
 func TestDuplicateKeyModeReplace(t *testing.T) {
-	// Object: {"a": 1, "a": 2}
+	// Object: {"a": 1, "a": 2} - 2 pairs with duplicate key
 	var buf bytes.Buffer
-	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeObject)
+	buf.WriteByte(0x08) // chunk: count=2, no continuation
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x01) // value 1
+	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x02) // value 2
-	buf.WriteByte(typeContainerEnd)
+	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
 	dec.SetDuplicateKeyMode(DupKeyKeepLast)
@@ -303,16 +305,16 @@ func TestDuplicateKeyModeWithStruct(t *testing.T) {
 		A int `json:"a"`
 	}
 
-	// Object: {"a": 1, "a": 2}
+	// Object: {"a": 1, "a": 2} - 2 pairs with duplicate key
 	var buf bytes.Buffer
-	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeObject)
+	buf.WriteByte(0x08) // chunk: count=2, no continuation
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x01)
+	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x02)
-	buf.WriteByte(typeContainerEnd)
+	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
 
 	t.Run("keep_first", func(t *testing.T) {
 		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
@@ -342,16 +344,16 @@ func TestDuplicateKeyModeWithStruct(t *testing.T) {
 }
 
 func TestDuplicateKeyModeWithInterface(t *testing.T) {
-	// Object: {"a": 1, "a": 2}
+	// Object: {"a": 1, "a": 2} - 2 pairs with duplicate key
 	var buf bytes.Buffer
-	buf.WriteByte(typeObjectStart)
+	buf.WriteByte(typeObject)
+	buf.WriteByte(0x08) // chunk: count=2, no continuation
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x01)
+	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x02)
-	buf.WriteByte(typeContainerEnd)
+	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
 
 	t.Run("keep_first", func(t *testing.T) {
 		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
@@ -818,16 +820,18 @@ func TestCombinedDecoderConfigurations(t *testing.T) {
 // Test limit edge values
 func TestLimitEdgeValues(t *testing.T) {
 	t.Run("depth_at_limit", func(t *testing.T) {
-		// Create structure exactly at depth limit
+		// Create structure exactly at depth limit using chunked format
 		const depth = 5
 		var buf bytes.Buffer
-		for i := 0; i < depth; i++ {
-			buf.WriteByte(typeArrayStart)
+		// Each nested array (except innermost) contains one element
+		for i := 0; i < depth-1; i++ {
+			buf.WriteByte(typeArray)
+			buf.WriteByte(0x04) // chunk: count=1, no continuation
 		}
-		buf.WriteByte(0x01) // value 1
-		for i := 0; i < depth; i++ {
-			buf.WriteByte(typeContainerEnd)
-		}
+		// Innermost array contains one value
+		buf.WriteByte(typeArray)
+		buf.WriteByte(0x04)      // chunk: count=1, no continuation
+		buf.WriteByte(0x65)      // value 1 (small int: 0x64+1)
 
 		dec := NewDecoder(&buf)
 		dec.SetMaxDepth(depth)
@@ -840,17 +844,19 @@ func TestLimitEdgeValues(t *testing.T) {
 	})
 
 	t.Run("depth_one_over_limit", func(t *testing.T) {
-		// Create structure one over depth limit
+		// Create structure one over depth limit using chunked format
 		const limit = 5
 		const depth = limit + 1
 		var buf bytes.Buffer
-		for i := 0; i < depth; i++ {
-			buf.WriteByte(typeArrayStart)
+		// Each nested array (except innermost) contains one element
+		for i := 0; i < depth-1; i++ {
+			buf.WriteByte(typeArray)
+			buf.WriteByte(0x04) // chunk: count=1, no continuation
 		}
-		buf.WriteByte(0x01)
-		for i := 0; i < depth; i++ {
-			buf.WriteByte(typeContainerEnd)
-		}
+		// Innermost array contains one value
+		buf.WriteByte(typeArray)
+		buf.WriteByte(0x04)      // chunk: count=1, no continuation
+		buf.WriteByte(0x65)      // value 1 (small int: 0x64+1)
 
 		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
 		dec.SetMaxDepth(limit)
@@ -1134,13 +1140,12 @@ func TestValidWithSecurityData(t *testing.T) {
 	})
 
 	t.Run("duplicate_keys_invalid_by_default", func(t *testing.T) {
-		// Object with duplicate keys: {"a": 1, "a": 2}
-		// 0x9a (object start) + "a":1 + "a":2 + 0x9b (end)
+		// Object with duplicate keys: {"a": 1, "a": 2} using chunked format
 		dupKeyData := []byte{
-			typeObjectStart,
-			typeShortStringBase + 1, 'a', 0x01, // "a": 1
-			typeShortStringBase + 1, 'a', 0x02, // "a": 2
-			typeContainerEnd,
+			typeObject,
+			0x08, // chunk: count=2, no continuation
+			typeShortStringBase + 1, 'a', 0x65, // "a": 1 (small int: 0x64+1)
+			typeShortStringBase + 1, 'a', 0x66, // "a": 2 (small int: 0x64+2)
 		}
 		if Valid(dupKeyData) {
 			t.Error("Valid should return false for duplicate keys by default")
@@ -1148,15 +1153,17 @@ func TestValidWithSecurityData(t *testing.T) {
 	})
 
 	t.Run("deeply_nested_valid", func(t *testing.T) {
-		// Deep nesting but within limits
+		// Deep nesting but within limits using chunked format
 		var buf bytes.Buffer
-		for i := 0; i < 100; i++ {
-			buf.WriteByte(typeArrayStart)
+		// Each nested array (except innermost) contains one element
+		for i := 0; i < 99; i++ {
+			buf.WriteByte(typeArray)
+			buf.WriteByte(0x04) // chunk: count=1, no continuation
 		}
+		// Innermost array contains null
+		buf.WriteByte(typeArray)
+		buf.WriteByte(0x04) // chunk: count=1, no continuation
 		buf.WriteByte(typeNull)
-		for i := 0; i < 100; i++ {
-			buf.WriteByte(typeContainerEnd)
-		}
 		if !Valid(buf.Bytes()) {
 			t.Error("Valid should return true for deeply nested but valid data")
 		}
@@ -1213,10 +1220,10 @@ func TestTokenWithSecurityModes(t *testing.T) {
 		// Token() is a lower-level API that returns raw strings
 		// without UTF-8 processing. This test verifies that behavior.
 		data := []byte{
-			typeObjectStart,
+			typeObject,
+			0x04, // chunk: count=1, no continuation
 			typeShortStringBase + 2, 0x80, 'a', // Invalid UTF-8 key
-			0x01,            // value 1
-			typeContainerEnd,
+			0x65, // value 1 (small int: 0x64+1)
 		}
 
 		dec := NewDecoder(bytes.NewReader(data))
