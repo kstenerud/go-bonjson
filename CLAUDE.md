@@ -269,28 +269,28 @@ func (t *MyType) UnmarshalBONJSON(data []byte) error {
 ```
 
 
-## Cross-Implementation Test Runner
+## Specification Conformance Tests
 
-The `cmd/bonjson-test` directory contains a test runner for the BONJSON test specification format. This enables running cross-implementation test suites to verify correct encoding/decoding behavior.
+The test runner runs BONJSON universal test specification files as Go tests. This enables running cross-implementation test suites to verify correct encoding/decoding behavior. Test results count towards code coverage.
 
 ### Usage
 
 ```bash
-# Run tests from a single test file
-go run ./cmd/bonjson-test/ testdata/sample-tests.json
+# Run conformance tests
+go test -v -run TestBONJSONSpec
 
-# Run tests from a configuration file
-go run ./cmd/bonjson-test/ testdata/test-config.json
+# Run test runner validation tests
+go test -v -run TestRunnerValidation
 
-# Verbose output
-go run ./cmd/bonjson-test/ -v testdata/sample-tests.json
-
-# Run BONJSON spec conformance tests (requires sibling bonjson repo)
-./run-spec-tests.sh           # Run all conformance tests
-./run-spec-tests.sh -v        # Verbose output
-./run-spec-tests.sh -i        # Run each file individually
-./run-spec-tests.sh -h        # Show help
+# Run validation function unit tests
+go test -v -run TestValidationFunctions
 ```
+
+### Test Organization
+
+- `spec_test.go` - Test runner implementation
+- `specification/tests/conformance/` - Codec conformance tests
+- `specification/tests/test-runner-validation/` - Test runner validation tests
 
 ### Supported Test Types
 
@@ -304,37 +304,47 @@ go run ./cmd/bonjson-test/ -v testdata/sample-tests.json
 
 ### Supported Options
 
-| Option | Description |
-|--------|-------------|
-| `allow_nul` | Allow NUL characters in strings |
-| `allow_nan_infinity` | Allow NaN and Infinity values |
-| `max_depth` | Maximum container nesting depth |
-| `max_string_length` | Maximum string length in bytes |
-| `max_chunks` | Maximum string chunks |
-| `max_container_size` | Maximum elements per container |
-| `max_document_size` | Maximum document size in bytes |
+| Option | Type | Description |
+|--------|------|-------------|
+| `allow_nul` | boolean | Allow NUL characters in strings |
+| `allow_trailing_bytes` | boolean | Allow unconsumed bytes after decoding |
+| `nan_infinity_behavior` | string | NaN/Infinity handling: `reject`, `allow`, `stringify` |
+| `duplicate_key` | string | Duplicate key handling: `reject`, `keep_first`, `keep_last` |
+| `invalid_utf8` | string | Invalid UTF-8 handling: `reject`, `replace`, `delete`, `ignore`, `pass_through` |
+| `max_depth` | integer | Maximum container nesting depth |
+| `max_string_length` | integer | Maximum string length in bytes |
+| `max_chunks` | integer | Maximum string chunks |
+| `max_container_size` | integer | Maximum elements per container |
+| `max_document_size` | integer | Maximum document size in bytes |
 
 ### Error Type Mapping
 
-The runner maps bonjson errors to standardized error types:
+The runner recognizes these standardized error types:
 
-| Error Type | bonjson Error |
-|------------|---------------|
-| `truncated` | `TruncatedDataError` |
-| `trailing_bytes` | `TrailingDataError` |
-| `invalid_type_code` | `InvalidTypeCodeError` |
-| `invalid_utf8` | `InvalidUTF8Error` |
-| `nul_character` | `NullInStringError` |
-| `duplicate_key` | `DuplicateKeyError` |
-| `invalid_data` | `InvalidValueError`, `UnsupportedValueError` (NaN/Inf) |
-| `value_out_of_range` | `ValueRangeError` |
-| `too_many_chunks` | `TooManyChunksError` |
-| `empty_chunk_continuation` | `EmptyChunkContinuationError` |
-| `max_depth_exceeded` | `MaxDepthError` |
-| `max_container_size_exceeded` | `MaxContainerSizeError` |
-| `max_document_size_exceeded` | `MaxDocumentSizeError` |
+| Error Type | Description |
+|------------|-------------|
+| `truncated` | Unexpected end of input data |
+| `trailing_bytes` | Unconsumed bytes after decoding |
+| `invalid_type_code` | Unrecognized or reserved type code |
+| `invalid_utf8` | Invalid UTF-8 byte sequence |
+| `nul_character` / `nul_in_string` | NUL (U+0000) byte in string |
+| `duplicate_key` | Duplicate key in object |
+| `unclosed_container` | Missing container end marker |
+| `invalid_data` | Generic invalid data |
+| `invalid_object_key` | Non-string key in object |
+| `value_out_of_range` | Value exceeds allowed range |
+| `too_many_chunks` | String exceeds chunk count limit |
+| `empty_chunk_continuation` | Zero-length chunk with continuation bit |
+| `max_depth_exceeded` | Container nesting too deep |
+| `max_string_length_exceeded` | String exceeds length limit |
+| `max_container_size_exceeded` | Container has too many elements |
+| `max_document_size_exceeded` | Document exceeds size limit |
+| `nan_not_allowed` | NaN value when not allowed |
+| `infinity_not_allowed` | Infinity value when not allowed |
 
-### $number Marker
+### Marker Objects
+
+#### $number Marker
 
 Special numeric values use the `$number` marker:
 - `{"$number": "NaN"}` - IEEE 754 NaN
@@ -342,6 +352,36 @@ Special numeric values use the `$number` marker:
 - `{"$number": "-Infinity"}` - negative infinity
 - `{"$number": "18446744073709551615"}` - large integers
 - `{"$number": "0x1.921fb54442d18p+1"}` - hex floats (for exact bit patterns)
+
+#### $bytes Marker
+
+Raw byte sequences for invalid UTF-8 testing use the `$bytes` marker:
+- `{"$bytes": "68 65 6c 6c 6f ff 77 6f 72 6c 64"}` - raw bytes with invalid UTF-8
+
+Tests using `$bytes` require the `raw_string_bytes` capability, which go-bonjson does not support (Go strings must be valid UTF-8). These tests are automatically skipped.
+
+### Test Runner Validation
+
+The test runner validates test files according to the BONJSON Universal Test Specification:
+
+- **Test name validation**: Must start with letter, contain only letters/digits/underscores
+- **Duplicate detection**: Test names checked case-insensitively
+- **Semver validation**: Version field must be valid semantic versioning
+- **Option validation**: Options checked for correct types (boolean/integer/string enum)
+- **String enum validation**: String options validated against allowed values
+- **Required fields**: Each test type has required fields that must be present
+- **Marker validation**: `$number` and `$bytes` markers validated for format and no extra keys
+- **Hex validation**: Hex strings must have even digits, valid characters only
+
+Tests with unrecognized options or error types are skipped with a warning (not structural errors).
+
+### Encoder Limitations
+
+The encoder does not support all options that the decoder supports:
+- `allow_nul` - Encoder always rejects NUL in strings (spec says "MUST NOT produce")
+- `max_depth`, `max_string_length`, etc. - Only supported on decoder
+
+Tests requiring these encoder options are skipped.
 
 ### Encoding Differences
 
