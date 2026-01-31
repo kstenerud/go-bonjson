@@ -22,57 +22,63 @@
 // THE SOFTWARE.
 //
 
+// ABOUTME: Wire format type codes and security limit constants for BONJSON.
+// ABOUTME: Phase 2 format: delimiter-terminated containers, FF-terminated
+// ABOUTME: long strings, native-size integers, zigzag LEB128 big numbers.
+
 package bonjson
 
-// Type codes for BONJSON encoding
+// Type codes for BONJSON encoding (Phase 2 format)
 const (
-	// Small integers -100 to 100 (type codes 0x00-0xc8)
+	// Small integers -100 to 100 (type codes 0x00-0xC8)
 	// Value = type_code - 100
 	typeSmallIntMin = 0x00 // -100
-	typeSmallIntMax = 0xc8 // 100
+	typeSmallIntMax = 0xC8 // 100
 
-	// Reserved (0xc9-0xcf)
+	// 0xC9 is reserved
 
-	// Unsigned integers (0xd0-0xd7) - n bytes where n = (typecode & 0x07) + 1
-	typeUintBase = 0xd0
+	// Big number (0xCA) - zigzag LEB128 exponent + zigzag LEB128 significand
+	typeBigNumber = 0xCA
 
-	// Signed integers (0xd8-0xdf) - n bytes where n = (typecode & 0x07) + 1
-	typeSintBase = 0xd8
+	// 32-bit float (0xCB)
+	typeFloat32 = 0xCB
 
-	// Short strings (0xe0-0xef) - n bytes where n = (typecode & 0x0f)
-	typeShortStringBase = 0xe0
+	// 64-bit float (0xCC)
+	typeFloat64 = 0xCC
 
-	// Long string (0xf0)
-	typeLongString = 0xf0
+	// Null (0xCD)
+	typeNull = 0xCD
 
-	// Big number (0xf1)
-	typeBigNumber = 0xf1
+	// Boolean false (0xCE)
+	typeFalse = 0xCE
 
-	// 16-bit bfloat16 (0xf2)
-	typeFloat16 = 0xf2
+	// Boolean true (0xCF)
+	typeTrue = 0xCF
 
-	// 32-bit float (0xf3)
-	typeFloat32 = 0xf3
+	// Short strings (0xD0-0xDF) - n bytes where n = (typecode & 0x0f)
+	typeShortStringBase = 0xD0
 
-	// 64-bit float (0xf4)
-	typeFloat64 = 0xf4
+	// Unsigned integers (0xE0-0xE3) - native sizes 1, 2, 4, 8 bytes
+	// Size index = typecode & 0x03, byte count = 1 << sizeIndex
+	typeUintBase = 0xE0
 
-	// Null (0xf5)
-	typeNull = 0xf5
+	// Signed integers (0xE4-0xE7) - native sizes 1, 2, 4, 8 bytes
+	// Size index = typecode & 0x03, byte count = 1 << sizeIndex
+	typeSintBase = 0xE4
 
-	// Boolean false (0xf6)
-	typeFalse = 0xf6
+	// 0xE8-0xFB are reserved
 
-	// Boolean true (0xf7)
-	typeTrue = 0xf7
+	// Array (0xFC) - followed by values, terminated by 0xFE
+	typeArray = 0xFC
 
-	// Array (0xf8) - followed by element chunks
-	typeArray = 0xf8
+	// Object (0xFD) - followed by key-value pairs, terminated by 0xFE
+	typeObject = 0xFD
 
-	// Object (0xf9) - followed by pair chunks
-	typeObject = 0xf9
+	// Container end marker (0xFE)
+	typeContainerEnd = 0xFE
 
-	// Reserved (0xfa-0xff)
+	// Long string (0xFF) - 0xFF + data bytes + 0xFF
+	typeLongString = 0xFF
 )
 
 // Maximum values for small integers encoded in the type code itself
@@ -84,23 +90,16 @@ const (
 // Maximum length for short strings (encoded in type code)
 const maxShortStringLen = 15
 
-// Big number special values (when significand length is 0)
-const (
-	bigNumZero         = 0x00 // 0
-	bigNumInfinity     = 0x02 // infinity (invalid in BONJSON)
-	bigNumNaNQuiet     = 0x04 // quiet NaN (invalid in BONJSON)
-	bigNumNaNSignaling = 0x06 // signaling NaN (invalid in BONJSON)
-	bigNumNegative     = 0x01 // negative bit
-)
+// nativeSizes maps size index (0-3) to byte count (1, 2, 4, 8)
+var nativeSizes = [4]int{1, 2, 4, 8}
 
 // Security limits (configurable via options)
 // Defaults per BONJSON spec "Resource Limits" table
 const (
-	defaultMaxDocumentSize   = 2_000_000_000     // 2 GB
-	defaultMaxContainerDepth = 512              // Nesting depth
-	defaultMaxContainerSize  = 1_000_000        // Elements per container
-	defaultMaxStringLength   = 10_000_000       // 10 MB per string
-	defaultMaxChunks         = 100              // Chunks per string
+	defaultMaxDocumentSize   = 2_000_000_000 // 2 GB
+	defaultMaxContainerDepth = 500           // Nesting depth
+	defaultMaxContainerSize  = 1_000_000     // Elements per container
+	defaultMaxStringLength   = 10_000_000    // 10 MB per string
 )
 
 // InvalidUTF8Mode controls how the decoder handles invalid UTF-8 byte sequences.

@@ -142,28 +142,6 @@ func (e *NullInStringError) Error() string {
 	return fmt.Sprintf("bonjson: NUL character in string at offset %d", e.Offset)
 }
 
-// TooManyChunksError is returned when a string has more chunks than allowed.
-type TooManyChunksError struct {
-	Count  int
-	Max    int
-	Offset int64
-}
-
-func (e *TooManyChunksError) Error() string {
-	return fmt.Sprintf("bonjson: string has %d chunks, max allowed is %d at offset %d", e.Count, e.Max, e.Offset)
-}
-
-// EmptyChunkContinuationError is returned when a zero-length chunk has the
-// continuation bit set. This is invalid because empty chunks with continuation
-// serve no purpose and could be used for DoS attacks.
-type EmptyChunkContinuationError struct {
-	Offset int64
-}
-
-func (e *EmptyChunkContinuationError) Error() string {
-	return fmt.Sprintf("bonjson: empty chunk with continuation bit set at offset %d", e.Offset)
-}
-
 // ValueRangeError is returned when a numeric value is out of range.
 type ValueRangeError struct {
 	Value  string
@@ -244,15 +222,6 @@ type TrailingDataError struct {
 
 func (e *TrailingDataError) Error() string {
 	return fmt.Sprintf("bonjson: trailing data after value at offset %d", e.Offset)
-}
-
-// NonCanonicalLengthError is returned when a length field uses more bytes than necessary.
-type NonCanonicalLengthError struct {
-	Offset int64
-}
-
-func (e *NonCanonicalLengthError) Error() string {
-	return fmt.Sprintf("bonjson: non-canonical length encoding at offset %d", e.Offset)
 }
 
 // UnclosedContainerError is returned when a container (array or object) is not properly closed.

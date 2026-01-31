@@ -32,7 +32,6 @@ import (
 	"math"
 	"math/big"
 	"reflect"
-	"slices"
 	"strconv"
 	"sync"
 	"unicode/utf8"
@@ -94,8 +93,6 @@ func Unmarshal(data []byte, v any) error {
 //
 //   - [MaxDepthError]: Container nesting exceeded the maximum allowed depth.
 //
-//   - [TooManyChunksError]: A chunked string exceeded the maximum chunk count.
-//
 //   - [UnmarshalTypeError]: The BONJSON value's type is incompatible with
 //     the destination Go type (including numeric overflow).
 //
@@ -142,7 +139,6 @@ type decodeState struct {
 	nanInfMode                NaNInfinityMode
 	invalidUTF8Mode           InvalidUTF8Mode
 	duplicateKeyMode          DuplicateKeyMode
-	maxAllowedChunks          int
 	maxAllowedStringLength    int64
 	maxAllowedContainerDepth  int
 	maxAllowedContainerSize   int
@@ -166,7 +162,6 @@ func newDecodeState() *decodeState {
 	d := decodeStatePool.Get().(*decodeState)
 	d.savedError = nil
 	d.disallowUnknownFields = false
-	d.maxAllowedChunks = defaultMaxChunks
 	d.allowNUL = false
 	d.nanInfMode = NaNInfReject
 	d.invalidUTF8Mode = UTF8Reject
@@ -339,40 +334,25 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		// Small integer (-100 to 100): value = type_code - 100
 		return d.storeInt(int64(tc)-100, pv, ut)
 
-	case tc&0xf8 == typeUintBase:
-		// Unsigned integer (1-8 bytes, little-endian)
-		n := int(tc&0x07) + 1
+	case tc >= typeUintBase && tc <= typeUintBase+3:
+		// Unsigned integer (native sizes: 1, 2, 4, 8 bytes)
+		n := nativeSizes[tc&0x03]
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		val := readLittleEndianUint64(d.data[d.offsetIntoData:], n)
+		val := readNativeSizeUint64(d.data[d.offsetIntoData:], n)
 		d.offsetIntoData += n
 		return d.storeUint(val, pv, ut)
 
-	case tc&0xf8 == typeSintBase:
-		// Signed integer (1-8 bytes, little-endian)
-		n := int(tc&0x07) + 1
+	case tc >= typeSintBase && tc <= typeSintBase+3:
+		// Signed integer (native sizes: 1, 2, 4, 8 bytes)
+		n := nativeSizes[tc&0x03]
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
-		val := readLittleEndianUint64(d.data[d.offsetIntoData:], n)
+		val := readNativeSizeUint64(d.data[d.offsetIntoData:], n)
 		d.offsetIntoData += n
-		return d.storeInt(signExtend(val, n), pv, ut)
-
-	case tc == typeFloat16:
-		f, err := decodeFloat16(d.data[d.offsetIntoData:])
-		if err != nil {
-			return err
-		}
-		d.offsetIntoData += 2
-		handled, err := d.handleNaNInf(f, pv, ut)
-		if err != nil {
-			return err
-		}
-		if handled {
-			return nil
-		}
-		return d.storeFloat(f, pv, ut)
+		return d.storeInt(signExtendNative(val, n), pv, ut)
 
 	case tc == typeFloat32:
 		f, err := decodeFloat32(d.data[d.offsetIntoData:])
@@ -405,55 +385,11 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		return d.storeFloat(f, pv, ut)
 
 	case tc == typeBigNumber:
-		bn, special, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
+		bn, _, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
 		if err != nil {
 			return err
 		}
 		d.offsetIntoData += n
-		// Check for special values (NaN, Infinity)
-		if special != BigNumNormal {
-			switch d.nanInfMode {
-			case NaNInfReject:
-				switch special {
-				case BigNumInf:
-					return &InvalidValueError{Value: "Infinity", Offset: int64(d.offsetIntoData)}
-				case BigNumQNaN:
-					return &InvalidValueError{Value: "NaN", Offset: int64(d.offsetIntoData)}
-				case BigNumSNaN:
-					return &InvalidValueError{Value: "signaling NaN", Offset: int64(d.offsetIntoData)}
-				}
-
-			case NaNInfStringify:
-				var s string
-				switch special {
-				case BigNumInf:
-					if bn.Negative {
-						s = "-Infinity"
-					} else {
-						s = "Infinity"
-					}
-				case BigNumQNaN, BigNumSNaN:
-					s = "NaN"
-				}
-				return d.storeString([]byte(s), pv, ut)
-
-			case NaNInfAllow:
-				// Fall through to store as float
-			}
-			// Store as special float value (allow mode, or fallthrough)
-			var f float64
-			switch special {
-			case BigNumInf:
-				if bn.Negative {
-					f = math.Inf(-1)
-				} else {
-					f = math.Inf(1)
-				}
-			case BigNumQNaN, BigNumSNaN:
-				f = math.NaN()
-			}
-			return d.storeFloat(f, pv, ut)
-		}
 		// For *big.Int and *big.Float, use the original value v to preserve type info
 		// since indirect() returns an invalid pv when TextUnmarshaler is found
 		return d.storeBigNumber(bn, v, pv, ut)
@@ -469,7 +405,7 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		return d.storeString(s, pv, ut)
 
 	case tc == typeLongString:
-		s, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedChunks, d.maxAllowedStringLength)
+		s, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedStringLength)
 		if err != nil {
 			return err
 		}
@@ -777,59 +713,60 @@ func (d *decodeState) storeBigNumber(bn *BigNumber, origV reflect.Value, pv refl
 // It tries primitives first (int64, uint64, float64), falling back to
 // *big.Int or *big.Float only when the value doesn't fit or would lose precision.
 func bigNumberToGoValue(bn *BigNumber) interface{} {
+	sig := bn.Significand
+	exp := bn.Exponent
+
 	// Zero case
-	if len(bn.Significand) == 0 {
-		if bn.Negative {
-			return int64(0) // -0 as integer
-		}
+	if sig == nil || sig.Sign() == 0 {
 		return int64(0)
 	}
 
-	// Convert significand from little-endian to big.Int
-	bigEndian := slices.Clone(bn.Significand)
-	slices.Reverse(bigEndian)
-	sigInt := new(big.Int).SetBytes(bigEndian)
+	// Get exponent as int64 for comparison
+	expSign := 0
+	if exp != nil {
+		expSign = exp.Sign()
+	}
 
-	if bn.Exponent >= 0 {
+	if expSign >= 0 {
 		// Integer result: significand * 10^exponent
-		if bn.Exponent > 0 {
-			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(bn.Exponent)), nil)
-			sigInt.Mul(sigInt, multiplier)
-		}
-
-		// Apply sign
-		if bn.Negative {
-			sigInt.Neg(sigInt)
+		result := new(big.Int).Set(sig)
+		if expSign > 0 {
+			multiplier := new(big.Int).Exp(big.NewInt(10), exp, nil)
+			result.Mul(result, multiplier)
 		}
 
 		// Try to fit in int64
-		if sigInt.IsInt64() {
-			return sigInt.Int64()
+		if result.IsInt64() {
+			return result.Int64()
 		}
 		// Try to fit in uint64 (only for non-negative)
-		if !bn.Negative && sigInt.IsUint64() {
-			return sigInt.Uint64()
+		if result.Sign() >= 0 && result.IsUint64() {
+			return result.Uint64()
 		}
 		// Must use *big.Int
-		return sigInt
+		return result
 	}
 
 	// Negative exponent: might be a decimal
 	// First check if it divides evenly (result is still an integer)
-	divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-bn.Exponent)), nil)
+	negExp := new(big.Int).Neg(exp)
+	divisor := new(big.Int).Exp(big.NewInt(10), negExp, nil)
+
+	// Use absolute value of significand for division, track sign separately
+	absSig := new(big.Int).Abs(sig)
 	quotient := new(big.Int)
 	remainder := new(big.Int)
-	quotient.DivMod(sigInt, divisor, remainder)
+	quotient.DivMod(absSig, divisor, remainder)
 
 	if remainder.Sign() == 0 {
 		// Divides evenly - result is an integer
-		if bn.Negative {
+		if sig.Sign() < 0 {
 			quotient.Neg(quotient)
 		}
 		if quotient.IsInt64() {
 			return quotient.Int64()
 		}
-		if !bn.Negative && quotient.IsUint64() {
+		if sig.Sign() >= 0 && quotient.IsUint64() {
 			return quotient.Uint64()
 		}
 		return quotient
@@ -837,10 +774,10 @@ func bigNumberToGoValue(bn *BigNumber) interface{} {
 
 	// Result is a decimal - try float64 first
 	// Convert to big.Float for precise calculation
-	sigFloat := new(big.Float).SetInt(sigInt)
+	sigFloat := new(big.Float).SetInt(absSig)
 	divisorFloat := new(big.Float).SetInt(divisor)
 	result := new(big.Float).Quo(sigFloat, divisorFloat)
-	if bn.Negative {
+	if sig.Sign() < 0 {
 		result.Neg(result)
 	}
 
@@ -851,7 +788,6 @@ func bigNumberToGoValue(bn *BigNumber) interface{} {
 	}
 
 	// Check if round-tripping through float64 preserves the value
-	// This catches cases where the value fits in float64's range and precision
 	roundTrip := new(big.Float).SetFloat64(f64)
 	if result.Cmp(roundTrip) == 0 {
 		return f64
@@ -863,7 +799,10 @@ func bigNumberToGoValue(bn *BigNumber) interface{} {
 
 // storeBigNumberToBigInt converts a BigNumber to a *big.Int with full precision.
 func (d *decodeState) storeBigNumberToBigInt(bn *BigNumber, v reflect.Value) error {
-	if len(bn.Significand) == 0 {
+	sig := bn.Significand
+	exp := bn.Exponent
+
+	if sig == nil || sig.Sign() == 0 {
 		// Zero
 		if v.IsNil() {
 			v.Set(reflect.ValueOf(new(big.Int)))
@@ -872,78 +811,55 @@ func (d *decodeState) storeBigNumberToBigInt(bn *BigNumber, v reflect.Value) err
 		return nil
 	}
 
-	// Convert significand from little-endian to big.Int
-	// big.Int.SetBytes expects big-endian
-	bigEndian := slices.Clone(bn.Significand)
-	slices.Reverse(bigEndian)
-
-	sigInt := new(big.Int).SetBytes(bigEndian)
+	result := new(big.Int).Set(sig)
 
 	// Apply exponent if any (multiply by 10^exponent)
-	if bn.Exponent != 0 {
-		if bn.Exponent > 0 {
-			// Multiply by 10^exponent
-			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(bn.Exponent)), nil)
-			sigInt.Mul(sigInt, multiplier)
+	if exp != nil && exp.Sign() != 0 {
+		if exp.Sign() > 0 {
+			multiplier := new(big.Int).Exp(big.NewInt(10), exp, nil)
+			result.Mul(result, multiplier)
 		} else {
 			// Divide by 10^(-exponent) - this may lose precision for non-integer results
-			divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-bn.Exponent)), nil)
-			sigInt.Div(sigInt, divisor)
+			negExp := new(big.Int).Neg(exp)
+			divisor := new(big.Int).Exp(big.NewInt(10), negExp, nil)
+			result.Div(result, divisor)
 		}
-	}
-
-	// Apply sign
-	if bn.Negative {
-		sigInt.Neg(sigInt)
 	}
 
 	if v.IsNil() {
 		v.Set(reflect.ValueOf(new(big.Int)))
 	}
-	v.Elem().Set(reflect.ValueOf(*sigInt))
+	v.Elem().Set(reflect.ValueOf(*result))
 	return nil
 }
 
 // storeBigNumberToBigFloat converts a BigNumber to a *big.Float with full precision.
 func (d *decodeState) storeBigNumberToBigFloat(bn *BigNumber, v reflect.Value) error {
-	if len(bn.Significand) == 0 {
+	sig := bn.Significand
+	exp := bn.Exponent
+
+	if sig == nil || sig.Sign() == 0 {
 		// Zero
 		if v.IsNil() {
 			v.Set(reflect.ValueOf(new(big.Float)))
 		}
-		result := new(big.Float)
-		if bn.Negative {
-			result.Neg(result) // -0
-		}
-		v.Elem().Set(reflect.ValueOf(*result))
+		v.Elem().Set(reflect.ValueOf(*new(big.Float)))
 		return nil
 	}
 
-	// Convert significand from little-endian to big.Int
-	bigEndian := slices.Clone(bn.Significand)
-	slices.Reverse(bigEndian)
-
-	sigInt := new(big.Int).SetBytes(bigEndian)
-
-	// Convert to big.Float
-	result := new(big.Float).SetInt(sigInt)
+	// Convert significand to big.Float (sign is already in sig)
+	result := new(big.Float).SetInt(sig)
 
 	// Apply exponent if any
-	if bn.Exponent != 0 {
-		if bn.Exponent > 0 {
-			// Multiply by 10^exponent
-			multiplier := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(bn.Exponent)), nil))
+	if exp != nil && exp.Sign() != 0 {
+		if exp.Sign() > 0 {
+			multiplier := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), exp, nil))
 			result.Mul(result, multiplier)
 		} else {
-			// Divide by 10^(-exponent)
-			divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-bn.Exponent)), nil))
+			negExp := new(big.Int).Neg(exp)
+			divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), negExp, nil))
 			result.Quo(result, divisor)
 		}
-	}
-
-	// Apply sign
-	if bn.Negative {
-		result.Neg(result)
 	}
 
 	if v.IsNil() {
@@ -1178,73 +1094,51 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 	isSlice := vKind == reflect.Slice
 	if !isSlice && vKind != reflect.Array {
 		d.saveError(&UnmarshalTypeError{Value: "array", Type: vType, Offset: int64(d.offsetIntoData)})
-		return d.skipChunkedContainer(false)
+		return d.skipContainer()
 	}
 
 	vLen := v.Len()
 	totalElements := 0
-	chunkCount := 0
 
-	// Read chunks until continuation bit is 0
+	// Read elements until container end marker
 	for {
-		// Read chunk header
-		chunkElements, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
+		// Peek at next byte to check for end marker
+		b, err := d.peekByte()
 		if err != nil {
 			return err
 		}
-		d.offsetIntoData += n
-		chunkCount++
-
-		// Empty chunk with continuation is invalid
-		if chunkElements == 0 && continuation {
-			return &EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)}
-		}
-
-		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
-			return &TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)}
+		if b == typeContainerEnd {
+			d.offsetIntoData++ // consume the end marker
+			break
 		}
 
 		// Check container size limit
-		if d.maxAllowedContainerSize > 0 && totalElements+int(chunkElements) > d.maxAllowedContainerSize {
-			return &MaxContainerSizeError{Size: totalElements + int(chunkElements), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+		if d.maxAllowedContainerSize > 0 && totalElements >= d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: totalElements + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
 		}
 
-		// Pre-allocate slice if possible (use first chunk as hint)
-		if isSlice && chunkCount == 1 && !continuation && chunkElements > 0 {
-			if v.Cap() < int(chunkElements) {
-				v.Grow(int(chunkElements) - v.Cap())
+		// Expand slice if necessary
+		if isSlice {
+			if totalElements >= v.Cap() {
+				v.Grow(1)
+			}
+			if totalElements >= vLen {
+				vLen++
+				v.SetLen(vLen)
 			}
 		}
 
-		// Read elements in this chunk
-		for j := uint64(0); j < chunkElements; j++ {
-			// Expand slice if necessary
-			if isSlice {
-				if totalElements >= v.Cap() {
-					v.Grow(1)
-				}
-				if totalElements >= vLen {
-					vLen++
-					v.SetLen(vLen)
-				}
+		if totalElements < vLen {
+			if err := d.decodeValue(v.Index(totalElements)); err != nil {
+				return err
 			}
-
-			if totalElements < vLen {
-				if err := d.decodeValue(v.Index(totalElements)); err != nil {
-					return err
-				}
-			} else {
-				// Ran out of fixed array: skip
-				if err := d.decodeValue(reflect.Value{}); err != nil {
-					return err
-				}
+		} else {
+			// Ran out of fixed array: skip
+			if err := d.decodeValue(reflect.Value{}); err != nil {
+				return err
 			}
-			totalElements++
 		}
-
-		if !continuation {
-			break
-		}
+		totalElements++
 	}
 
 	if totalElements < vLen {
@@ -1309,7 +1203,7 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 	default:
 		if !reflect.PointerTo(kt).Implements(textUnmarshalerType) {
 			d.saveError(&UnmarshalTypeError{Value: "object", Type: t, Offset: int64(d.offsetIntoData)})
-			return d.skipChunkedContainer(true)
+			return d.skipContainer()
 		}
 	}
 
@@ -1320,85 +1214,70 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 	elemType := t.Elem()
 	mapElem := reflect.New(elemType).Elem()
 	totalPairs := 0
-	chunkCount := 0
 
-	// Read chunks until continuation bit is 0
+	// Read key-value pairs until container end marker
 	for {
-		// Read chunk header
-		chunkPairs, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
+		// Peek at next byte to check for end marker
+		b, err := d.peekByte()
 		if err != nil {
 			return err
 		}
-		d.offsetIntoData += n
-		chunkCount++
-
-		// Empty chunk with continuation is invalid
-		if chunkPairs == 0 && continuation {
-			return &EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)}
-		}
-
-		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
-			return &TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)}
+		if b == typeContainerEnd {
+			d.offsetIntoData++ // consume the end marker
+			break
 		}
 
 		// Check container size limit
-		if d.maxAllowedContainerSize > 0 && totalPairs+int(chunkPairs) > d.maxAllowedContainerSize {
-			return &MaxContainerSizeError{Size: totalPairs + int(chunkPairs), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+		if d.maxAllowedContainerSize > 0 && totalPairs >= d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: totalPairs + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
 		}
 
-		// Read key-value pairs in this chunk
-		for j := uint64(0); j < chunkPairs; j++ {
-			// Read key (must be a string)
-			keyStart := d.offsetIntoData
-			key, err := d.readString()
-			if err != nil {
+		// Read key (must be a string)
+		keyStart := d.offsetIntoData
+		key, err := d.readString()
+		if err != nil {
+			return err
+		}
+
+		// Convert key to appropriate type
+		kv, err := d.convertMapKey(kt, key, keyStart)
+		if err != nil {
+			d.saveError(err)
+			// Skip value and continue
+			if err := d.decodeValue(reflect.Value{}); err != nil {
 				return err
 			}
+			continue
+		}
 
-			// Convert key to appropriate type
-			kv, err := d.convertMapKey(kt, key, keyStart)
-			if err != nil {
-				d.saveError(err)
-				// Skip value and continue
+		// Check for duplicate key
+		if kv.IsValid() && v.MapIndex(kv).IsValid() {
+			switch d.duplicateKeyMode {
+			case DupKeyReject:
+				return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
+			case DupKeyKeepFirst:
+				// Skip this value, keep the existing one
 				if err := d.decodeValue(reflect.Value{}); err != nil {
 					return err
 				}
 				continue
+			case DupKeyKeepLast:
+				// Fall through to decode and replace
 			}
-
-			// Check for duplicate key
-			if kv.IsValid() && v.MapIndex(kv).IsValid() {
-				switch d.duplicateKeyMode {
-				case DupKeyReject:
-					return &DuplicateKeyError{Key: string(key), Offset: int64(keyStart)}
-				case DupKeyKeepFirst:
-					// Skip this value, keep the existing one
-					if err := d.decodeValue(reflect.Value{}); err != nil {
-						return err
-					}
-					continue
-				case DupKeyKeepLast:
-					// Fall through to decode and replace
-				}
-			}
-
-			// Reset map element for reuse
-			mapElem.SetZero()
-
-			// Read value
-			if err := d.decodeValue(mapElem); err != nil {
-				return err
-			}
-
-			if kv.IsValid() {
-				v.SetMapIndex(kv, mapElem)
-			}
-			totalPairs++
 		}
 
-		if !continuation {
-			break
+		// Reset map element for reuse
+		mapElem.SetZero()
+
+		// Read value
+		if err := d.decodeValue(mapElem); err != nil {
+			return err
 		}
+
+		if kv.IsValid() {
+			v.SetMapIndex(kv, mapElem)
+		}
+		totalPairs++
 	}
 	return nil
 }
@@ -1440,61 +1319,46 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 	seenFields := d.pushSeenStructFields(fields.fieldCount)
 	defer d.popSeenStructFields()
 	totalPairs := 0
-	chunkCount := 0
 
-	// Read chunks until continuation bit is 0
+	// Read key-value pairs until container end marker
 	for {
-		// Read chunk header
-		chunkPairs, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
+		// Peek at next byte to check for end marker
+		b, err := d.peekByte()
 		if err != nil {
 			return err
 		}
-		d.offsetIntoData += n
-		chunkCount++
-
-		// Empty chunk with continuation is invalid
-		if chunkPairs == 0 && continuation {
-			return &EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)}
-		}
-
-		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
-			return &TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)}
+		if b == typeContainerEnd {
+			d.offsetIntoData++ // consume the end marker
+			break
 		}
 
 		// Check container size limit
-		if d.maxAllowedContainerSize > 0 && totalPairs+int(chunkPairs) > d.maxAllowedContainerSize {
-			return &MaxContainerSizeError{Size: totalPairs + int(chunkPairs), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+		if d.maxAllowedContainerSize > 0 && totalPairs >= d.maxAllowedContainerSize {
+			return &MaxContainerSizeError{Size: totalPairs + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
 		}
 
-		// Read key-value pairs in this chunk
-		for j := uint64(0); j < chunkPairs; j++ {
-			// Read key (must be a string)
-			keyStart := d.offsetIntoData
-			key, err := d.readString()
-			if err != nil {
+		// Read key (must be a string)
+		keyStart := d.offsetIntoData
+		key, err := d.readString()
+		if err != nil {
+			return err
+		}
+
+		// Find field for key and check for duplicates
+		fieldValue, skip := d.findStructFieldWithDupCheck(v, &fields, key, keyStart, seenFields)
+		if skip {
+			// Skip this value (duplicate with KeepFirst mode)
+			if err := d.decodeValue(reflect.Value{}); err != nil {
 				return err
 			}
-
-			// Find field for key and check for duplicates
-			fieldValue, skip := d.findStructFieldWithDupCheck(v, &fields, key, keyStart, seenFields)
-			if skip {
-				// Skip this value (duplicate with KeepFirst mode)
-				if err := d.decodeValue(reflect.Value{}); err != nil {
-					return err
-				}
-				continue
-			}
-
-			// Read value
-			if err := d.decodeValue(fieldValue); err != nil {
-				return err
-			}
-			totalPairs++
+			continue
 		}
 
-		if !continuation {
-			break
+		// Read value
+		if err := d.decodeValue(fieldValue); err != nil {
+			return err
 		}
+		totalPairs++
 	}
 	return nil
 }
@@ -1565,7 +1429,7 @@ func (d *decodeState) readString() ([]byte, error) {
 		return d.processString(s)
 
 	case tc == typeLongString:
-		s, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedChunks, d.maxAllowedStringLength)
+		s, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedStringLength)
 		if err != nil {
 			return nil, err
 		}
@@ -1583,25 +1447,19 @@ func (d *decodeState) skipValue(tc byte) error {
 	case tc <= typeSmallIntMax:
 		// Small integer (-100 to 100)
 		return nil
-	case tc&0xf8 == typeUintBase:
-		n := int(tc&0x07) + 1
+	case tc >= typeUintBase && tc <= typeUintBase+3:
+		n := nativeSizes[tc&0x03]
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
 		d.offsetIntoData += n
 		return nil
-	case tc&0xf8 == typeSintBase:
-		n := int(tc&0x07) + 1
+	case tc >= typeSintBase && tc <= typeSintBase+3:
+		n := nativeSizes[tc&0x03]
 		if d.offsetIntoData+n > len(d.data) {
 			return &TruncatedDataError{Expected: n, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
 		d.offsetIntoData += n
-		return nil
-	case tc == typeFloat16:
-		if d.offsetIntoData+2 > len(d.data) {
-			return &TruncatedDataError{Expected: 2, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
-		}
-		d.offsetIntoData += 2
 		return nil
 	case tc == typeFloat32:
 		if d.offsetIntoData+4 > len(d.data) {
@@ -1630,7 +1488,7 @@ func (d *decodeState) skipValue(tc byte) error {
 		d.offsetIntoData += length
 		return nil
 	case tc == typeLongString:
-		_, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedChunks, d.maxAllowedStringLength)
+		_, n, err := decodeLongString(d.data[d.offsetIntoData:], d.maxAllowedStringLength)
 		if err != nil {
 			return err
 		}
@@ -1639,126 +1497,70 @@ func (d *decodeState) skipValue(tc byte) error {
 	case tc == typeNull, tc == typeFalse, tc == typeTrue:
 		return nil
 	case tc == typeArray:
-		return d.skipChunkedContainer(false)
+		return d.skipContainer()
 	case tc == typeObject:
-		return d.skipChunkedContainer(true)
+		return d.skipContainer()
 	default:
 		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.offsetIntoData - 1)}
 	}
 }
 
-// skipContainer is kept for backwards compatibility but deprecated
-// use skipChunkedContainer instead
+// skipContainer skips over a delimiter-terminated container (array or object).
+// It reads and discards values until the typeContainerEnd (0xFE) byte is found.
 func (d *decodeState) skipContainer() error {
-	return d.skipChunkedContainer(false)
-}
-
-// skipChunkedContainer skips over a chunked array or object
-// isObject indicates whether to skip key-value pairs (true) or just values (false)
-func (d *decodeState) skipChunkedContainer(isObject bool) error {
 	for {
-		// Read chunk header
-		count, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
+		b, err := d.peekByte()
 		if err != nil {
 			return err
 		}
-		d.offsetIntoData += n
-
-		// Empty chunk with continuation is invalid
-		if count == 0 && continuation {
-			return &EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)}
+		if b == typeContainerEnd {
+			d.offsetIntoData++ // consume the end marker
+			return nil
 		}
-
-		// Skip items in this chunk
-		for i := uint64(0); i < count; i++ {
-			if isObject {
-				// Skip key
-				tc, err := d.readByte()
-				if err != nil {
-					return err
-				}
-				if err := d.skipValue(tc); err != nil {
-					return err
-				}
-			}
-			// Skip value
-			tc, err := d.readByte()
-			if err != nil {
-				return err
-			}
-			if err := d.skipValue(tc); err != nil {
-				return err
-			}
+		// Read and skip the next value
+		tc, err := d.readByte()
+		if err != nil {
+			return err
 		}
-
-		if !continuation {
-			break
+		if err := d.skipValue(tc); err != nil {
+			return err
 		}
 	}
-	return nil
 }
 
 // arrayInterface decodes an array into []any
 func (d *decodeState) arrayInterface() []any {
-	var v []any
+	v := make([]any, 0)
 	totalElements := 0
-	chunkCount := 0
 
-	// Read chunks until continuation bit is 0
+	// Read elements until container end marker
 	for {
-		// Read chunk header
-		chunkElements, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
+		b, err := d.peekByte()
 		if err != nil {
 			d.saveError(err)
 			return v
 		}
-		d.offsetIntoData += n
-		chunkCount++
-
-		// Empty chunk with continuation is invalid
-		if chunkElements == 0 && continuation {
-			d.saveError(&EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)})
-			return v
-		}
-
-		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
-			d.saveError(&TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)})
-			return v
+		if b == typeContainerEnd {
+			d.offsetIntoData++ // consume the end marker
+			break
 		}
 
 		// Check container size limit
-		if d.maxAllowedContainerSize > 0 && totalElements+int(chunkElements) > d.maxAllowedContainerSize {
-			d.saveError(&MaxContainerSizeError{Size: totalElements + int(chunkElements), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
+		if d.maxAllowedContainerSize > 0 && totalElements >= d.maxAllowedContainerSize {
+			d.saveError(&MaxContainerSizeError{Size: totalElements + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
 			return v
 		}
 
-		// Pre-allocate for first single chunk (optimization)
-		if v == nil && !continuation && chunkElements > 0 {
-			v = make([]any, 0, chunkElements)
-		} else if v == nil {
-			v = make([]any, 0)
+		var elem any
+		ev := reflect.ValueOf(&elem).Elem()
+		if err := d.decodeValue(ev); err != nil {
+			d.saveError(err)
+			return v
 		}
-
-		// Read elements in this chunk
-		for j := uint64(0); j < chunkElements; j++ {
-			var elem any
-			ev := reflect.ValueOf(&elem).Elem()
-			if err := d.decodeValue(ev); err != nil {
-				d.saveError(err)
-				return v
-			}
-			v = append(v, elem)
-			totalElements++
-		}
-
-		if !continuation {
-			break
-		}
+		v = append(v, elem)
+		totalElements++
 	}
 
-	if v == nil {
-		v = make([]any, 0)
-	}
 	return v
 }
 
@@ -1766,77 +1568,59 @@ func (d *decodeState) arrayInterface() []any {
 func (d *decodeState) objectInterface() map[string]any {
 	m := make(map[string]any)
 	totalPairs := 0
-	chunkCount := 0
 
-	// Read chunks until continuation bit is 0
+	// Read key-value pairs until container end marker
 	for {
-		// Read chunk header
-		chunkPairs, continuation, n, err := decodeLengthField(d.data[d.offsetIntoData:])
+		b, err := d.peekByte()
 		if err != nil {
 			d.saveError(err)
 			return m
 		}
-		d.offsetIntoData += n
-		chunkCount++
-
-		// Empty chunk with continuation is invalid
-		if chunkPairs == 0 && continuation {
-			d.saveError(&EmptyChunkContinuationError{Offset: int64(d.offsetIntoData - n)})
-			return m
-		}
-
-		if d.maxAllowedChunks > 0 && chunkCount > d.maxAllowedChunks {
-			d.saveError(&TooManyChunksError{Count: chunkCount, Max: d.maxAllowedChunks, Offset: int64(d.offsetIntoData)})
-			return m
+		if b == typeContainerEnd {
+			d.offsetIntoData++ // consume the end marker
+			break
 		}
 
 		// Check container size limit
-		if d.maxAllowedContainerSize > 0 && totalPairs+int(chunkPairs) > d.maxAllowedContainerSize {
-			d.saveError(&MaxContainerSizeError{Size: totalPairs + int(chunkPairs), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
+		if d.maxAllowedContainerSize > 0 && totalPairs >= d.maxAllowedContainerSize {
+			d.saveError(&MaxContainerSizeError{Size: totalPairs + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
 			return m
 		}
 
-		// Read key-value pairs in this chunk
-		for j := uint64(0); j < chunkPairs; j++ {
-			keyStart := d.offsetIntoData
-			key, err := d.readString()
-			if err != nil {
-				d.saveError(err)
-				return m
-			}
+		keyStart := d.offsetIntoData
+		key, err := d.readString()
+		if err != nil {
+			d.saveError(err)
+			return m
+		}
 
-			keyStr := string(key)
-			// Check for duplicate key using the map itself
-			if _, exists := m[keyStr]; exists {
-				switch d.duplicateKeyMode {
-				case DupKeyReject:
-					d.saveError(&DuplicateKeyError{Key: keyStr, Offset: int64(keyStart)})
+		keyStr := string(key)
+		// Check for duplicate key using the map itself
+		if _, exists := m[keyStr]; exists {
+			switch d.duplicateKeyMode {
+			case DupKeyReject:
+				d.saveError(&DuplicateKeyError{Key: keyStr, Offset: int64(keyStart)})
+				return m
+			case DupKeyKeepFirst:
+				// Skip this value, keep the existing one
+				if err := d.decodeValue(reflect.Value{}); err != nil {
+					d.saveError(err)
 					return m
-				case DupKeyKeepFirst:
-					// Skip this value, keep the existing one
-					if err := d.decodeValue(reflect.Value{}); err != nil {
-						d.saveError(err)
-						return m
-					}
-					continue
-				case DupKeyKeepLast:
-					// Fall through to decode and replace
 				}
+				continue
+			case DupKeyKeepLast:
+				// Fall through to decode and replace
 			}
-
-			var val any
-			ev := reflect.ValueOf(&val).Elem()
-			if err := d.decodeValue(ev); err != nil {
-				d.saveError(err)
-				return m
-			}
-			m[keyStr] = val
-			totalPairs++
 		}
 
-		if !continuation {
-			break
+		var val any
+		ev := reflect.ValueOf(&val).Elem()
+		if err := d.decodeValue(ev); err != nil {
+			d.saveError(err)
+			return m
 		}
+		m[keyStr] = val
+		totalPairs++
 	}
 	return m
 }

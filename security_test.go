@@ -65,14 +65,16 @@ func TestMaxDepthConfigurable(t *testing.T) {
 	// Each nested array except the innermost contains one element (another array)
 	for i := 0; i < depth-1; i++ {
 		buf.WriteByte(typeArray)
-		buf.WriteByte(0x04) // chunk: count=1, no continuation
 	}
 	// Innermost array contains just null
 	buf.WriteByte(typeArray)
-	buf.WriteByte(0x04) // chunk: count=1, no continuation
 	buf.WriteByte(typeNull)
+	buf.WriteByte(typeContainerEnd)
+	for i := 0; i < depth-1; i++ {
+		buf.WriteByte(typeContainerEnd)
+	}
 
-	// With default depth (512), this should succeed
+	// With default depth (500), this should succeed
 	var v any
 	if err := Unmarshal(buf.Bytes(), &v); err != nil {
 		t.Errorf("depth %d should be allowed: %v", depth, err)
@@ -105,21 +107,6 @@ func TestMaxStringLengthExceeded(t *testing.T) {
 	err := dec.Decode(&v)
 	if err == nil {
 		t.Error("expected error for string exceeding max length")
-	}
-}
-
-// ============================================================================
-// Max Chunks Configuration Tests
-// ============================================================================
-
-func TestSetMaxChunksMethod(t *testing.T) {
-	// Verify SetMaxChunks method exists and can be called
-	dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
-	dec.SetMaxChunks(1000)
-
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		t.Errorf("Decode after SetMaxChunks error: %v", err)
 	}
 }
 
@@ -252,13 +239,13 @@ func TestDuplicateKeyModeKeepFirst(t *testing.T) {
 	// Object: {"a": 1, "a": 2} - 2 pairs with duplicate key
 	var buf bytes.Buffer
 	buf.WriteByte(typeObject)
-	buf.WriteByte(0x08) // chunk: count=2, no continuation
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
 	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
 	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
+	buf.WriteByte(typeContainerEnd)
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
 	dec.SetDuplicateKeyMode(DupKeyKeepFirst)
@@ -278,13 +265,13 @@ func TestDuplicateKeyModeReplace(t *testing.T) {
 	// Object: {"a": 1, "a": 2} - 2 pairs with duplicate key
 	var buf bytes.Buffer
 	buf.WriteByte(typeObject)
-	buf.WriteByte(0x08) // chunk: count=2, no continuation
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
 	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
 	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
+	buf.WriteByte(typeContainerEnd)
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
 	dec.SetDuplicateKeyMode(DupKeyKeepLast)
@@ -308,13 +295,13 @@ func TestDuplicateKeyModeWithStruct(t *testing.T) {
 	// Object: {"a": 1, "a": 2} - 2 pairs with duplicate key
 	var buf bytes.Buffer
 	buf.WriteByte(typeObject)
-	buf.WriteByte(0x08) // chunk: count=2, no continuation
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
 	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
 	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
+	buf.WriteByte(typeContainerEnd)
 
 	t.Run("keep_first", func(t *testing.T) {
 		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
@@ -347,13 +334,13 @@ func TestDuplicateKeyModeWithInterface(t *testing.T) {
 	// Object: {"a": 1, "a": 2} - 2 pairs with duplicate key
 	var buf bytes.Buffer
 	buf.WriteByte(typeObject)
-	buf.WriteByte(0x08) // chunk: count=2, no continuation
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
 	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
 	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
+	buf.WriteByte(typeContainerEnd)
 
 	t.Run("keep_first", func(t *testing.T) {
 		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
@@ -390,20 +377,25 @@ func TestDuplicateKeyModeWithInterface(t *testing.T) {
 
 func TestNaNInfinityAllow(t *testing.T) {
 	tests := []struct {
-		name    string
-		special byte
+		name     string
+		value    float64
+		checkNaN bool
+		checkInf int // 0 = not inf, 1 = +inf, -1 = -inf
 	}{
-		{"quiet_nan", bigNumNaNQuiet},
-		{"signaling_nan", bigNumNaNSignaling},
-		{"positive_infinity", bigNumInfinity},
-		{"negative_infinity", bigNumInfinity | bigNumNegative},
+		{"nan", math.NaN(), true, 0},
+		{"positive_infinity", math.Inf(1), false, 1},
+		{"negative_infinity", math.Inf(-1), false, -1},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Encode with allow mode
 			var buf bytes.Buffer
-			buf.WriteByte(typeBigNumber)
-			buf.WriteByte(tt.special)
+			enc := NewEncoder(&buf)
+			enc.SetNaNInfinityMode(NaNInfAllow)
+			if err := enc.Encode(tt.value); err != nil {
+				t.Fatalf("NaNInfAllow encode should not error: %v", err)
+			}
 
 			dec := NewDecoder(bytes.NewReader(buf.Bytes()))
 			dec.SetNaNInfinityMode(NaNInfAllow)
@@ -414,21 +406,13 @@ func TestNaNInfinityAllow(t *testing.T) {
 				t.Fatalf("NaNInfAllow should not error: %v", err)
 			}
 
-			// Verify the value is correct
-			switch tt.special & 0x06 { // mask out negative bit
-			case bigNumNaNQuiet, bigNumNaNSignaling:
-				if v == v { // NaN != NaN
+			if tt.checkNaN {
+				if !math.IsNaN(v) {
 					t.Errorf("expected NaN, got %v", v)
 				}
-			case bigNumInfinity:
-				if tt.special&bigNumNegative != 0 {
-					if v >= 0 {
-						t.Errorf("expected negative infinity, got %v", v)
-					}
-				} else {
-					if v <= 0 {
-						t.Errorf("expected positive infinity, got %v", v)
-					}
+			} else if tt.checkInf != 0 {
+				if !math.IsInf(v, tt.checkInf) {
+					t.Errorf("expected Inf(%d), got %v", tt.checkInf, v)
 				}
 			}
 		})
@@ -438,20 +422,23 @@ func TestNaNInfinityAllow(t *testing.T) {
 func TestNaNInfinityStringifyDecode(t *testing.T) {
 	tests := []struct {
 		name     string
-		special  byte
+		value    float64
 		expected string
 	}{
-		{"quiet_nan", bigNumNaNQuiet, "NaN"},
-		{"signaling_nan", bigNumNaNSignaling, "NaN"},
-		{"positive_infinity", bigNumInfinity, "Infinity"},
-		{"negative_infinity", bigNumInfinity | bigNumNegative, "-Infinity"},
+		{"nan", math.NaN(), "NaN"},
+		{"positive_infinity", math.Inf(1), "Infinity"},
+		{"negative_infinity", math.Inf(-1), "-Infinity"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Encode with allow mode to get raw float bytes
 			var buf bytes.Buffer
-			buf.WriteByte(typeBigNumber)
-			buf.WriteByte(tt.special)
+			enc := NewEncoder(&buf)
+			enc.SetNaNInfinityMode(NaNInfAllow)
+			if err := enc.Encode(tt.value); err != nil {
+				t.Fatalf("encode error: %v", err)
+			}
 
 			dec := NewDecoder(bytes.NewReader(buf.Bytes()))
 			dec.SetNaNInfinityMode(NaNInfStringify)
@@ -470,33 +457,6 @@ func TestNaNInfinityStringifyDecode(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, s)
 			}
 		})
-	}
-}
-
-func TestNaNInfinityStringifyDecodeFloat16(t *testing.T) {
-	// Create a bfloat16 NaN value
-	// bfloat16 NaN: sign=0, exp=0xFF, mantissa!=0
-	// Using 0x7FC0 which is a common quiet NaN
-	var buf bytes.Buffer
-	buf.WriteByte(typeFloat16)
-	buf.WriteByte(0xC0) // low byte
-	buf.WriteByte(0x7F) // high byte (0x7FC0 = quiet NaN)
-
-	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
-	dec.SetNaNInfinityMode(NaNInfStringify)
-
-	var v any
-	err := dec.Decode(&v)
-	if err != nil {
-		t.Fatalf("NaNInfStringify should not error: %v", err)
-	}
-
-	s, ok := v.(string)
-	if !ok {
-		t.Fatalf("expected string, got %T: %v", v, v)
-	}
-	if s != "NaN" {
-		t.Errorf("expected %q, got %q", "NaN", s)
 	}
 }
 
@@ -627,45 +587,6 @@ func TestNaNInfinityEncodeAllow(t *testing.T) {
 			err = dec.Decode(&v)
 			if err != nil {
 				t.Fatalf("failed to decode: %v", err)
-			}
-
-			if tt.checkNaN {
-				if !math.IsNaN(v) {
-					t.Errorf("expected NaN, got %v", v)
-				}
-			} else if tt.checkInf != 0 {
-				if !math.IsInf(v, tt.checkInf) {
-					t.Errorf("expected Inf(%d), got %v", tt.checkInf, v)
-				}
-			}
-		})
-	}
-}
-
-func TestNaNInfinityDecodeFloat16Allow(t *testing.T) {
-	tests := []struct {
-		name     string
-		data     []byte
-		checkNaN bool
-		checkInf int
-	}{
-		// bfloat16 NaN: 0x7FC0
-		{"nan", []byte{typeFloat16, 0xC0, 0x7F}, true, 0},
-		// bfloat16 +Inf: 0x7F80
-		{"positive_infinity", []byte{typeFloat16, 0x80, 0x7F}, false, 1},
-		// bfloat16 -Inf: 0xFF80
-		{"negative_infinity", []byte{typeFloat16, 0x80, 0xFF}, false, -1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dec := NewDecoder(bytes.NewReader(tt.data))
-			dec.SetNaNInfinityMode(NaNInfAllow)
-
-			var v float64
-			err := dec.Decode(&v)
-			if err != nil {
-				t.Fatalf("NaNInfAllow should not error: %v", err)
 			}
 
 			if tt.checkNaN {
@@ -820,18 +741,20 @@ func TestCombinedDecoderConfigurations(t *testing.T) {
 // Test limit edge values
 func TestLimitEdgeValues(t *testing.T) {
 	t.Run("depth_at_limit", func(t *testing.T) {
-		// Create structure exactly at depth limit using chunked format
+		// Create structure exactly at depth limit using delimiter-terminated format
 		const depth = 5
 		var buf bytes.Buffer
 		// Each nested array (except innermost) contains one element
 		for i := 0; i < depth-1; i++ {
 			buf.WriteByte(typeArray)
-			buf.WriteByte(0x04) // chunk: count=1, no continuation
 		}
 		// Innermost array contains one value
 		buf.WriteByte(typeArray)
-		buf.WriteByte(0x04)      // chunk: count=1, no continuation
-		buf.WriteByte(0x65)      // value 1 (small int: 0x64+1)
+		buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
+		// Close all arrays
+		for i := 0; i < depth; i++ {
+			buf.WriteByte(typeContainerEnd)
+		}
 
 		dec := NewDecoder(&buf)
 		dec.SetMaxDepth(depth)
@@ -844,19 +767,21 @@ func TestLimitEdgeValues(t *testing.T) {
 	})
 
 	t.Run("depth_one_over_limit", func(t *testing.T) {
-		// Create structure one over depth limit using chunked format
+		// Create structure one over depth limit using delimiter-terminated format
 		const limit = 5
 		const depth = limit + 1
 		var buf bytes.Buffer
 		// Each nested array (except innermost) contains one element
 		for i := 0; i < depth-1; i++ {
 			buf.WriteByte(typeArray)
-			buf.WriteByte(0x04) // chunk: count=1, no continuation
 		}
 		// Innermost array contains one value
 		buf.WriteByte(typeArray)
-		buf.WriteByte(0x04)      // chunk: count=1, no continuation
-		buf.WriteByte(0x65)      // value 1 (small int: 0x64+1)
+		buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
+		// Close all arrays
+		for i := 0; i < depth; i++ {
+			buf.WriteByte(typeContainerEnd)
+		}
 
 		dec := NewDecoder(bytes.NewReader(buf.Bytes()))
 		dec.SetMaxDepth(limit)
@@ -916,17 +841,6 @@ func TestLimitEdgeValues(t *testing.T) {
 		}
 	})
 
-	t.Run("zero_chunks_unlimited", func(t *testing.T) {
-		// Zero chunk limit means unlimited
-		dec := NewDecoder(bytes.NewReader([]byte{typeNull}))
-		dec.SetMaxChunks(0) // Unlimited
-
-		var v any
-		err := dec.Decode(&v)
-		if err != nil {
-			t.Errorf("zero chunk limit should be unlimited: %v", err)
-		}
-	})
 }
 
 // Test encoder configuration
@@ -1140,12 +1054,12 @@ func TestValidWithSecurityData(t *testing.T) {
 	})
 
 	t.Run("duplicate_keys_invalid_by_default", func(t *testing.T) {
-		// Object with duplicate keys: {"a": 1, "a": 2} using chunked format
+		// Object with duplicate keys: {"a": 1, "a": 2} using delimiter-terminated format
 		dupKeyData := []byte{
 			typeObject,
-			0x08, // chunk: count=2, no continuation
 			typeShortStringBase + 1, 'a', 0x65, // "a": 1 (small int: 0x64+1)
 			typeShortStringBase + 1, 'a', 0x66, // "a": 2 (small int: 0x64+2)
+			typeContainerEnd,
 		}
 		if Valid(dupKeyData) {
 			t.Error("Valid should return false for duplicate keys by default")
@@ -1153,17 +1067,19 @@ func TestValidWithSecurityData(t *testing.T) {
 	})
 
 	t.Run("deeply_nested_valid", func(t *testing.T) {
-		// Deep nesting but within limits using chunked format
+		// Deep nesting but within limits using delimiter-terminated format
 		var buf bytes.Buffer
 		// Each nested array (except innermost) contains one element
 		for i := 0; i < 99; i++ {
 			buf.WriteByte(typeArray)
-			buf.WriteByte(0x04) // chunk: count=1, no continuation
 		}
 		// Innermost array contains null
 		buf.WriteByte(typeArray)
-		buf.WriteByte(0x04) // chunk: count=1, no continuation
 		buf.WriteByte(typeNull)
+		// Close all 100 arrays
+		for i := 0; i < 100; i++ {
+			buf.WriteByte(typeContainerEnd)
+		}
 		if !Valid(buf.Bytes()) {
 			t.Error("Valid should return true for deeply nested but valid data")
 		}
@@ -1221,9 +1137,9 @@ func TestTokenWithSecurityModes(t *testing.T) {
 		// without UTF-8 processing. This test verifies that behavior.
 		data := []byte{
 			typeObject,
-			0x04, // chunk: count=1, no continuation
 			typeShortStringBase + 2, 0x80, 'a', // Invalid UTF-8 key
 			0x65, // value 1 (small int: 0x64+1)
+			typeContainerEnd,
 		}
 
 		dec := NewDecoder(bytes.NewReader(data))

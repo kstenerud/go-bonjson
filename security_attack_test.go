@@ -42,25 +42,26 @@ import (
 // ============================================================================
 
 func TestAttack_LengthFieldOverflow(t *testing.T) {
-	// Try to create a length field claiming extremely large length
+	// Long strings use 0xFF + data + 0xFF delimiter format.
+	// Test malformed long strings.
 	tests := []struct {
 		name string
 		data []byte
 	}{
 		{
-			"9byte_max_length",
-			// Long string with 9-byte length field claiming max uint64
-			append([]byte{typeLongString, 0x00}, bytes.Repeat([]byte{0xff}, 8)...),
+			"long_string_no_terminator",
+			// Long string with no terminating 0xFF
+			[]byte{typeLongString, 'h', 'e', 'l', 'l', 'o'},
 		},
 		{
-			"length_larger_than_data",
-			// Long string claiming 1000 bytes but only providing 5
-			[]byte{typeLongString, 0x02, 0x0f, 0xd0, 'h', 'e', 'l', 'l', 'o'},
+			"long_string_empty_no_terminator",
+			// Long string start with no content and no terminator
+			[]byte{typeLongString},
 		},
 		{
-			"length_field_truncated",
-			// 9-byte length field but truncated
-			[]byte{typeLongString, 0x00, 0xff, 0xff},
+			"long_string_only_start",
+			// Just the long string marker byte
+			[]byte{typeLongString},
 		},
 	}
 
@@ -81,11 +82,11 @@ func TestAttack_IntegerLengthMismatch(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"uint8_missing", []byte{typeUintBase}},                   // Claims 1 byte, has 0
-		{"uint16_short", []byte{typeUintBase + 1, 0x01}},          // Claims 2 bytes, has 1
-		{"uint64_short", []byte{typeUintBase + 7, 0x01, 0x02}},    // Claims 8 bytes, has 2
-		{"sint8_missing", []byte{typeSintBase}},                   // Claims 1 byte, has 0
-		{"sint64_short", []byte{typeSintBase + 7, 0x01}},          // Claims 8 bytes, has 1
+		{"uint8_missing", []byte{typeUintBase}},                       // Claims 1 byte, has 0
+		{"uint16_short", []byte{typeUintBase + 1, 0x01}},              // Claims 2 bytes, has 1
+		{"uint64_short", []byte{typeUintBase + 3, 0x01, 0x02}},        // Claims 8 bytes, has 2
+		{"sint8_missing", []byte{typeSintBase}},                       // Claims 1 byte, has 0
+		{"sint64_short", []byte{typeSintBase + 3, 0x01}},              // Claims 8 bytes, has 1
 	}
 
 	for _, tt := range tests {
@@ -110,17 +111,17 @@ func TestAttack_IntegerLengthMismatch(t *testing.T) {
 // ============================================================================
 
 func TestAttack_TruncatedContainer(t *testing.T) {
-	// In chunked format, test truncated containers (missing chunk data or elements)
+	// In delimiter-terminated format, test truncated containers (missing end markers or elements)
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{"array_no_chunk", []byte{typeArray}},                                         // no chunk header
-		{"array_truncated_elements", []byte{typeArray, 0x08}},                         // claims 2 elements, has none
-		{"object_no_chunk", []byte{typeObject}},                                       // no chunk header
-		{"object_truncated_pairs", []byte{typeObject, 0x04}},                          // claims 1 pair, has none
-		{"nested_array_truncated", []byte{typeArray, 0x04, typeArray}},                // nested array with no chunk header
-		{"nested_object_truncated", []byte{typeObject, 0x04, typeShortStringBase + 1, 'a', typeObject}}, // nested object missing chunk
+		{"array_no_end", []byte{typeArray}},                                              // no end marker
+		{"array_truncated_elements", []byte{typeArray, typeNull}},                      // element but no end marker
+		{"object_no_end", []byte{typeObject}},                                          // no end marker
+		{"object_truncated_pairs", []byte{typeObject, typeShortStringBase + 1, 'a'}},   // key but no value or end marker
+		{"nested_array_truncated", []byte{typeArray, typeArray, typeContainerEnd}},      // inner array missing end marker
+		{"nested_object_truncated", []byte{typeObject, typeShortStringBase + 1, 'a', typeObject}}, // nested object missing end
 	}
 
 	for _, tt := range tests {
@@ -161,16 +162,16 @@ func TestAttack_InvalidReservedTypeCodes(t *testing.T) {
 
 func TestAttack_NonStringObjectKey(t *testing.T) {
 	// Object keys must be strings - try various other types
-	// New chunked format: typeObject + chunk_header + key + value
+	// Delimiter-terminated: typeObject + key + value + typeContainerEnd
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{"int_key", []byte{typeObject, 0x04, 0x65, 0x66}},              // int key (1), int value (2) - using new small int encoding
-		{"null_key", []byte{typeObject, 0x04, typeNull, 0x65}},         // null key
-		{"bool_key", []byte{typeObject, 0x04, typeTrue, 0x65}},         // bool key
-		{"array_key", []byte{typeObject, 0x04, typeArray, 0x00, 0x65}}, // empty array key, int value
-		{"float_key", []byte{typeObject, 0x04, typeFloat16, 0x00, 0x00, 0x65}}, // float key
+		{"int_key", []byte{typeObject, 0x65, 0x66, typeContainerEnd}},                            // int key, int value
+		{"null_key", []byte{typeObject, typeNull, 0x65, typeContainerEnd}},                        // null key
+		{"bool_key", []byte{typeObject, typeTrue, 0x65, typeContainerEnd}},                        // bool key
+		{"array_key", []byte{typeObject, typeArray, typeContainerEnd, 0x65, typeContainerEnd}},    // empty array key, int value
+		{"float_key", []byte{typeObject, typeFloat32, 0x00, 0x00, 0x00, 0x00, 0x65, typeContainerEnd}}, // float key
 	}
 
 	for _, tt := range tests {
@@ -186,7 +187,7 @@ func TestAttack_NonStringObjectKey(t *testing.T) {
 
 func TestAttack_DuplicateKeyVariations(t *testing.T) {
 	// Various ways to try duplicate keys
-	// New chunked format: typeObject + chunk_header + pairs
+	// Delimiter-terminated: typeObject + key-value pairs + typeContainerEnd
 	tests := []struct {
 		name string
 		data []byte
@@ -195,18 +196,18 @@ func TestAttack_DuplicateKeyVariations(t *testing.T) {
 			"exact_duplicate",
 			[]byte{
 				typeObject,
-				0x08, // 2 pairs, no continuation
 				typeShortStringBase + 3, 'f', 'o', 'o', 0x65, // "foo": 1
 				typeShortStringBase + 3, 'f', 'o', 'o', 0x66, // "foo": 2
+				typeContainerEnd,
 			},
 		},
 		{
 			"empty_key_duplicate",
 			[]byte{
 				typeObject,
-				0x08, // 2 pairs
 				typeShortStringBase, 0x65, // "": 1
 				typeShortStringBase, 0x66, // "": 2
+				typeContainerEnd,
 			},
 		},
 		{
@@ -215,17 +216,17 @@ func TestAttack_DuplicateKeyVariations(t *testing.T) {
 				key := strings.Repeat("x", 20)
 				var buf bytes.Buffer
 				buf.WriteByte(typeObject)
-				buf.WriteByte(0x08) // 2 pairs, no continuation
 				// First key-value
 				buf.WriteByte(typeLongString)
-				buf.WriteByte(byte((len(key) << 1) << 1)) // length field: (20 << 1) << 1 = 80
 				buf.WriteString(key)
+				buf.WriteByte(typeLongString)
 				buf.WriteByte(0x65) // value 1
 				// Duplicate key-value
 				buf.WriteByte(typeLongString)
-				buf.WriteByte(byte((len(key) << 1) << 1))
 				buf.WriteString(key)
+				buf.WriteByte(typeLongString)
 				buf.WriteByte(0x66) // value 2
+				buf.WriteByte(typeContainerEnd)
 				return buf.Bytes()
 			}(),
 		},
@@ -257,12 +258,12 @@ func TestAttack_BigNumberMalformed(t *testing.T) {
 		name string
 		data []byte
 	}{
-		// Header claims significand but not enough data
-		{"sig_truncated", []byte{typeBigNumber, 0x10, 0x01}}, // sig_len=2, exp_len=0, but only 1 byte
-		// Header claims exponent but not enough data
-		{"exp_truncated", []byte{typeBigNumber, 0x0a}}, // sig_len=1, exp_len=1, but no data
-		// Maximum significand length (31 bytes) but no data
-		{"max_sig_truncated", []byte{typeBigNumber, 0xf8}}, // sig_len=31, exp_len=0
+		// Exponent LEB128 truncated (high bit set, no continuation)
+		{"exp_truncated", []byte{typeBigNumber, 0x80}},
+		// Exponent valid but significand LEB128 truncated
+		{"sig_truncated", []byte{typeBigNumber, 0x00, 0x80}}, // exp=0, sig starts with 0x80 (needs more bytes)
+		// No data after type code
+		{"no_data", []byte{typeBigNumber}},
 	}
 
 	for _, tt := range tests {
@@ -340,12 +341,11 @@ func TestAttack_StringInvalidUTF8Comprehensive(t *testing.T) {
 				}
 			}
 
-			// Create long string
+			// Create long string (0xFF + data + 0xFF)
 			var buf bytes.Buffer
 			buf.WriteByte(typeLongString)
-			encodeLengthField(buf.AvailableBuffer()[:16], uint64(len(tt.content)), false)
-			buf.WriteByte(byte((len(tt.content) << 1) | 0x01))
 			buf.Write(tt.content)
+			buf.WriteByte(typeLongString)
 
 			var v string
 			err := Unmarshal(buf.Bytes(), &v)
@@ -381,60 +381,37 @@ func TestAttack_StringNULByte(t *testing.T) {
 	}
 }
 
-func TestAttack_StringChunkingBomb(t *testing.T) {
-	// Create a string with many tiny chunks to waste resources
-	var buf bytes.Buffer
-	buf.WriteByte(typeLongString)
-
-	// 100 chunks of 1 byte each (should be rejected by default)
-	for i := 0; i < 100; i++ {
-		continuation := i < 99
-		var lenByte byte = 0x03 // length=1, continuation=1
-		if !continuation {
-			lenByte = 0x03 // length=1, continuation=0
-		}
-		buf.WriteByte(lenByte)
-		buf.WriteByte('x')
-	}
-
-	var v string
-	err := Unmarshal(buf.Bytes(), &v)
-	// Default should reject chunking
-	if err == nil {
-		t.Error("expected error for chunked string (default)")
-	}
-}
-
 // ============================================================================
 // Deep Nesting Attack Tests
 // ============================================================================
 
 func TestAttack_DeepNestingArrays(t *testing.T) {
 	// Create arrays nested to various depths
-	// Default max depth per BONJSON spec is 512
-	// New chunked format: typeArray + chunk_header(count=1) for each level
-	depths := []int{100, 500, 512, 513, 1000}
+	// Default max depth per BONJSON spec is 500
+	// Delimiter-terminated: typeArray + children + typeContainerEnd
+	depths := []int{100, 499, 500, 501, 1000}
 
 	for _, depth := range depths {
 		t.Run(fmt.Sprintf("depth_%04d", depth), func(t *testing.T) {
 			var buf bytes.Buffer
 			for i := 0; i < depth; i++ {
 				buf.WriteByte(typeArray)
-				buf.WriteByte(0x04) // 1 element, no continuation
 			}
 			buf.WriteByte(typeNull)
-			// No end markers needed in chunked format
+			for i := 0; i < depth; i++ {
+				buf.WriteByte(typeContainerEnd)
+			}
 
 			var v any
 			err := Unmarshal(buf.Bytes(), &v)
 
-			if depth > 512 {
-				// Should fail for depths > default max (512 per BONJSON spec)
+			if depth > 500 {
+				// Should fail for depths > default max (500 per BONJSON spec)
 				if err == nil {
 					t.Errorf("expected error for depth %d", depth)
 				}
 			} else {
-				// Should succeed for depths <= 512
+				// Should succeed for depths <= 500
 				if err != nil {
 					t.Errorf("unexpected error for depth %d: %v", depth, err)
 				}
@@ -445,18 +422,19 @@ func TestAttack_DeepNestingArrays(t *testing.T) {
 
 func TestAttack_DeepNestingObjects(t *testing.T) {
 	// Create objects nested to excessive depth
-	// New chunked format: typeObject + chunk_header(count=1) + key + value
+	// Delimiter-terminated: typeObject + key + value + typeContainerEnd
 	depth := 2000
 	var buf bytes.Buffer
 
 	for i := 0; i < depth; i++ {
 		buf.WriteByte(typeObject)
-		buf.WriteByte(0x04) // 1 pair, no continuation
 		buf.WriteByte(typeShortStringBase + 1)
 		buf.WriteByte('k')
 	}
 	buf.WriteByte(typeNull)
-	// No end markers needed in chunked format
+	for i := 0; i < depth; i++ {
+		buf.WriteByte(typeContainerEnd)
+	}
 
 	var v any
 	err := Unmarshal(buf.Bytes(), &v)
@@ -467,18 +445,15 @@ func TestAttack_DeepNestingObjects(t *testing.T) {
 
 func TestAttack_WideContainer(t *testing.T) {
 	// Very wide array (many elements)
-	// New chunked format: typeArray + chunk_header(count) + elements
+	// Delimiter-terminated: typeArray + elements + typeContainerEnd
 	var buf bytes.Buffer
 	count := 10000
 	buf.WriteByte(typeArray)
-	// Encode chunk header with count and no continuation
-	var scratch [9]byte
-	n := encodeLengthField(scratch[:], uint64(count), false)
-	buf.Write(scratch[:n])
 	for i := 0; i < count; i++ {
 		// Small int encoding: value + 100 (values 0-100 map to type codes 100-200)
 		buf.WriteByte(byte((i % 101) + 100))
 	}
+	buf.WriteByte(typeContainerEnd)
 
 	var v []int
 	err := Unmarshal(buf.Bytes(), &v)
@@ -502,15 +477,14 @@ func TestAttack_TruncatedData(t *testing.T) {
 		{"empty", []byte{}},
 		{"just_array_start", []byte{typeArray}},
 		{"just_object_start", []byte{typeObject}},
-		{"float16_truncated", []byte{typeFloat16, 0x00}},
 		{"float32_truncated", []byte{typeFloat32, 0x00, 0x00}},
 		{"float64_truncated", []byte{typeFloat64, 0x00, 0x00, 0x00, 0x00}},
 		{"string_header_only", []byte{typeLongString}},
 		{"bignumber_header_only", []byte{typeBigNumber}},
-		// Array with 1 element chunk but truncated value: typeArray + chunk(1, no-cont) + truncated float64
-		{"array_with_truncated_value", []byte{typeArray, 0x04, typeFloat64, 0x00}},
-		// Object with 1 pair chunk but truncated key: typeObject + chunk(1, no-cont) + truncated string
-		{"object_with_truncated_key", []byte{typeObject, 0x04, typeShortStringBase + 5, 'h', 'e'}},
+		// Array with truncated value: typeArray + truncated float64
+		{"array_with_truncated_value", []byte{typeArray, typeFloat64, 0x00}},
+		// Object with truncated key: typeObject + truncated string
+		{"object_with_truncated_key", []byte{typeObject, typeShortStringBase + 5, 'h', 'e'}},
 	}
 
 	for _, tt := range tests {
@@ -537,10 +511,10 @@ func TestAttack_TrailingGarbage(t *testing.T) {
 		{"null_with_trailing", []byte{typeNull, 0x00}},
 		{"bool_with_trailing", []byte{typeTrue, 0xff}},
 		{"string_with_trailing", []byte{typeShortStringBase + 1, 'a', 0x00}},
-		// Empty array (chunk count=0, no continuation) + trailing null
-		{"array_with_trailing", []byte{typeArray, 0x00, typeNull}},
-		// Empty object (chunk count=0, no continuation) + trailing byte
-		{"object_with_trailing", []byte{typeObject, 0x00, 0x01}},
+		// Empty array + trailing null
+		{"array_with_trailing", []byte{typeArray, typeContainerEnd, typeNull}},
+		// Empty object + trailing byte
+		{"object_with_trailing", []byte{typeObject, typeContainerEnd, 0x01}},
 	}
 
 	for _, tt := range tests {
@@ -563,18 +537,15 @@ func TestAttack_TrailingGarbage(t *testing.T) {
 // ============================================================================
 
 func TestAttack_LargeStringLength(t *testing.T) {
-	// Try to allocate a huge string via length field
-	// Using 9-byte length encoding for maximum value
-	data := []byte{
-		typeLongString,
-		0x00, // 9-byte length marker
-		0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, // 2GB length
-	}
+	// Long strings use 0xFF + data + 0xFF format.
+	// A very large string without a terminator should fail (truncated).
+	// Also test that max string length is enforced via streaming decoder.
+	data := []byte{typeLongString} // no terminator = truncated
 
 	var v string
 	err := Unmarshal(data, &v)
 	if err == nil {
-		t.Error("expected error for huge string length")
+		t.Error("expected error for unterminated long string")
 	}
 }
 
@@ -607,10 +578,10 @@ func TestAttack_TypeConfusion(t *testing.T) {
 	}{
 		{"int_into_string", []byte{0x6a}, new(string)}, // small int 6 (0x64+6)
 		{"string_into_int", []byte{typeShortStringBase + 3, 'f', 'o', 'o'}, new(int)},
-		// Empty array (chunk count=0, no continuation)
-		{"array_into_string", []byte{typeArray, 0x00}, new(string)},
-		// Empty object (chunk count=0, no continuation)
-		{"object_into_slice", []byte{typeObject, 0x00}, new([]int)},
+		// Empty array
+		{"array_into_string", []byte{typeArray, typeContainerEnd}, new(string)},
+		// Empty object
+		{"object_into_slice", []byte{typeObject, typeContainerEnd}, new([]int)},
 		{"bool_into_int", []byte{typeTrue}, new(int)},
 		{"null_into_int", []byte{typeNull}, new(int)},
 	}
@@ -684,8 +655,8 @@ func TestAttack_ValidWithMalicious(t *testing.T) {
 		{"valid_string", []byte{typeShortStringBase + 2, 'h', 'i'}, true},
 		{"truncated_float", []byte{typeFloat64, 0x00}, false},
 		{"reserved_type", []byte{0xc9}, false}, // reserved range 0xc9-0xcf
-		// Truncated array: typeArray + partial chunk (count=1 but no elements)
-		{"truncated_container", []byte{typeArray, 0x04}, false},
+		// Truncated array: typeArray with no end marker
+		{"truncated_container", []byte{typeArray}, false},
 		{"trailing_data", []byte{typeNull, 0x00}, false},
 		{"invalid_utf8", []byte{typeShortStringBase + 1, 0x80}, false},
 	}

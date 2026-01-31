@@ -410,11 +410,6 @@ func bigIntEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		return
 	}
 	bn := bigIntToBigNumber(bi)
-	if bn == nil {
-		// Number too large for BigNumber format, fall back to string encoding
-		e.writeString(bi.String())
-		return
-	}
 	n := encodeBigNumber(e.scratch[:], bn)
 	e.Write(e.scratch[:n])
 }
@@ -431,6 +426,7 @@ func bigFloatEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		return
 	}
 	// Check for special values (infinity)
+	// Phase 2 BigNumber has no special encoding for infinity
 	if bf.IsInf() {
 		switch e.nanInfMode {
 		case NaNInfReject:
@@ -444,7 +440,15 @@ func bigFloatEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 			}
 			return
 		case NaNInfAllow:
-			// Fall through to encode as BigNumber (which will encode as special value)
+			// Encode as float64 infinity
+			if bf.Sign() < 0 {
+				n := encodeFloat64(e.scratch[:], math.Inf(-1))
+				e.Write(e.scratch[:n])
+			} else {
+				n := encodeFloat64(e.scratch[:], math.Inf(1))
+				e.Write(e.scratch[:n])
+			}
+			return
 		}
 	}
 	bn := bigFloatToBigNumber(bf)
@@ -453,65 +457,45 @@ func bigFloatEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 }
 
 // bigIntToBigNumber converts a *big.Int to a BigNumber.
-// Returns nil if the number is too large to represent exactly in BigNumber format.
 func bigIntToBigNumber(bi *big.Int) *BigNumber {
 	if bi.Sign() == 0 {
-		return &BigNumber{Negative: false}
-	}
-
-	negative := bi.Sign() < 0
-
-	// Get absolute value - use Abs on a new big.Int to avoid modifying original
-	absVal := new(big.Int).Abs(bi)
-	absBytes := absVal.Bytes() // big-endian
-
-	// If the number fits in 31 bytes, encode directly with exponent 0
-	if len(absBytes) <= 31 {
-		// Convert to little-endian
-		significand := slices.Clone(absBytes)
-		slices.Reverse(significand)
-
 		return &BigNumber{
-			Significand: significand,
-			Exponent:    0,
-			Negative:    negative,
+			Significand: new(big.Int),
+			Exponent:    new(big.Int),
 		}
 	}
 
-	// For larger numbers, try to use decimal representation with trailing zeros removed
+	// Try to factor out trailing decimal zeros to reduce significand size
+	absVal := new(big.Int).Abs(bi)
 	decStr := absVal.String()
-
-	// Remove trailing zeros and count them as exponent
 	origLen := len(decStr)
-	decStr = strings.TrimRight(decStr, "0")
-	exponent := int32(origLen - len(decStr))
+	trimmed := strings.TrimRight(decStr, "0")
+	trailingZeros := origLen - len(trimmed)
 
-	// Parse the trimmed string back to a big.Int
-	sigInt := new(big.Int)
-	sigInt.SetString(decStr, 10)
-	sigBytes := sigInt.Bytes() // big-endian
+	sig := new(big.Int).Set(bi)
+	exp := new(big.Int)
 
-	// If still too large, return nil to indicate we should fall back to string encoding
-	if len(sigBytes) > 31 {
-		return nil
+	if trailingZeros > 0 {
+		// Divide significand by 10^trailingZeros
+		divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(trailingZeros)), nil)
+		sig.Div(sig, divisor)
+		exp.SetInt64(int64(trailingZeros))
 	}
 
-	// Convert to little-endian
-	significand := slices.Clone(sigBytes)
-	slices.Reverse(significand)
-
 	return &BigNumber{
-		Significand: significand,
-		Exponent:    exponent,
-		Negative:    negative,
+		Significand: sig,
+		Exponent:    exp,
 	}
 }
 
 // bigFloatToBigNumber converts a *big.Float to a BigNumber.
-// This converts the float to a decimal representation with significand × 10^exponent.
+// This converts the float to a decimal representation with significand x 10^exponent.
 func bigFloatToBigNumber(bf *big.Float) *BigNumber {
 	if bf.Sign() == 0 {
-		return &BigNumber{Negative: bf.Signbit()}
+		return &BigNumber{
+			Significand: new(big.Int),
+			Exponent:    new(big.Int),
+		}
 	}
 
 	negative := bf.Sign() < 0
@@ -521,7 +505,7 @@ func bigFloatToBigNumber(bf *big.Float) *BigNumber {
 
 	// Parse the scientific notation: [+-]d.dddde[+-]dd
 	var significandStr string
-	var exponent int32
+	var exponent int64
 
 	// Find 'e' or 'E'
 	eIdx := strings.IndexAny(text, "eE")
@@ -529,8 +513,7 @@ func bigFloatToBigNumber(bf *big.Float) *BigNumber {
 	if eIdx >= 0 {
 		significandStr = text[:eIdx]
 		expStr := text[eIdx+1:]
-		exp, _ := strconv.ParseInt(expStr, 10, 32)
-		exponent = int32(exp)
+		exponent, _ = strconv.ParseInt(expStr, 10, 64)
 	} else {
 		significandStr = text
 		exponent = 0
@@ -545,39 +528,36 @@ func bigFloatToBigNumber(bf *big.Float) *BigNumber {
 	dotIdx := strings.IndexByte(significandStr, '.')
 
 	if dotIdx >= 0 {
-		// Number of digits after decimal point
 		fracDigits := len(significandStr) - dotIdx - 1
-		exponent -= int32(fracDigits)
+		exponent -= int64(fracDigits)
 		significandStr = significandStr[:dotIdx] + significandStr[dotIdx+1:]
 	}
 
 	// Remove leading zeros from significand
 	significandStr = strings.TrimLeft(significandStr, "0")
 	if significandStr == "" {
-		return &BigNumber{Negative: negative}
+		return &BigNumber{
+			Significand: new(big.Int),
+			Exponent:    new(big.Int),
+		}
 	}
 
 	// Remove trailing zeros and adjust exponent
 	origLen := len(significandStr)
 	significandStr = strings.TrimRight(significandStr, "0")
 	trailingZeros := origLen - len(significandStr)
-	exponent += int32(trailingZeros)
+	exponent += int64(trailingZeros)
 
-	// Convert significand string to big.Int then to bytes
+	// Convert significand string to big.Int (signed)
 	sigInt := new(big.Int)
 	sigInt.SetString(significandStr, 10)
-
-	// Get bytes in big-endian
-	sigBytes := sigInt.Bytes()
-
-	// Convert to little-endian
-	significand := slices.Clone(sigBytes)
-	slices.Reverse(significand)
+	if negative {
+		sigInt.Neg(sigInt)
+	}
 
 	return &BigNumber{
-		Significand: significand,
-		Exponent:    exponent,
-		Negative:    negative,
+		Significand: sigInt,
+		Exponent:    big.NewInt(exponent),
 	}
 }
 
@@ -704,13 +684,10 @@ func (e *encodeState) writeString(s string) {
 		e.WriteByte(typeShortStringBase | byte(n))
 		e.WriteString(s)
 	} else {
-		// Long string: 1 byte type code + length field + data
-		// Calculate length field size once and encode to scratch buffer
-		payload := uint64(n) << 1 // continuation=false
-		e.scratch[0] = typeLongString
-		lfSize := encodeLengthPayload(e.scratch[1:], payload)
-		e.Write(e.scratch[:1+lfSize])
+		// Long string: 0xFF + data + 0xFF
+		e.WriteByte(typeLongString)
 		e.WriteString(s)
+		e.WriteByte(typeLongString)
 	}
 }
 
@@ -746,41 +723,10 @@ type structEncoder struct {
 }
 
 func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
-	// First pass: count non-omitted fields
-	count := 0
-	for i := range se.fields.list {
-		f := &se.fields.list[i]
-
-		// Find the nested struct field by following f.index.
-		fv := v
-		skip := false
-		for _, idx := range f.index {
-			if fv.Kind() == reflect.Pointer {
-				if fv.IsNil() {
-					skip = true
-					break
-				}
-				fv = fv.Elem()
-			}
-			fv = fv.Field(idx)
-		}
-		if skip {
-			continue
-		}
-
-		if (f.omitEmpty && isEmptyValue(fv)) ||
-			(f.omitZero && (f.isZero == nil && fv.IsZero() || (f.isZero != nil && f.isZero(fv)))) {
-			continue
-		}
-		count++
-	}
-
-	// Write object type code and chunk header (single chunk with pair count)
+	// Write object type code
 	e.WriteByte(typeObject)
-	lfSize := encodeLengthField(e.scratch[:], uint64(count), false)
-	e.Write(e.scratch[:lfSize])
 
-	// Second pass: write fields
+	// Write fields
 	for i := range se.fields.list {
 		f := &se.fields.list[i]
 
@@ -810,6 +756,9 @@ func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 		opts.quoted = f.quoted
 		f.encoder(e, fv, opts)
 	}
+
+	// Write container end marker
+	e.WriteByte(typeContainerEnd)
 }
 
 func newStructEncoder(t reflect.Type) encoderFunc {
@@ -864,10 +813,8 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 	}
 
 	// Slow path: use reflect.MapRange for other map types
-	// Write object type code and chunk header (single chunk with pair count)
+	// Write object type code
 	e.WriteByte(typeObject)
-	lfSize := encodeLengthField(e.scratch[:], uint64(v.Len()), false)
-	e.Write(e.scratch[:lfSize])
 
 	// Extract and sort the keys.
 	var (
@@ -889,6 +836,7 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 		e.writeString(kv.ks)
 		me.elemEnc(e, kv.v, opts)
 	}
+	e.WriteByte(typeContainerEnd)
 	e.ptrLevel--
 }
 
@@ -896,8 +844,6 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 
 func (me mapEncoder) encodeMapStringString(e *encodeState, m map[string]string) {
 	e.WriteByte(typeObject)
-	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
-	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -907,12 +853,11 @@ func (me mapEncoder) encodeMapStringString(e *encodeState, m map[string]string) 
 		e.writeString(k)
 		e.writeString(m[k])
 	}
+	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringAny(e *encodeState, m map[string]any, opts encOpts) {
 	e.WriteByte(typeObject)
-	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
-	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -922,12 +867,11 @@ func (me mapEncoder) encodeMapStringAny(e *encodeState, m map[string]any, opts e
 		e.writeString(k)
 		e.reflectValue(reflect.ValueOf(m[k]), opts)
 	}
+	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringInt(e *encodeState, m map[string]int) {
 	e.WriteByte(typeObject)
-	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
-	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -937,12 +881,11 @@ func (me mapEncoder) encodeMapStringInt(e *encodeState, m map[string]int) {
 		e.writeString(k)
 		e.writeSmallInt(int64(m[k]))
 	}
+	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringInt64(e *encodeState, m map[string]int64) {
 	e.WriteByte(typeObject)
-	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
-	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -952,12 +895,11 @@ func (me mapEncoder) encodeMapStringInt64(e *encodeState, m map[string]int64) {
 		e.writeString(k)
 		e.writeSmallInt(m[k])
 	}
+	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringFloat64(e *encodeState, m map[string]float64) {
 	e.WriteByte(typeObject)
-	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
-	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -967,12 +909,11 @@ func (me mapEncoder) encodeMapStringFloat64(e *encodeState, m map[string]float64
 		e.writeString(k)
 		e.writeFloat64(m[k])
 	}
+	e.WriteByte(typeContainerEnd)
 }
 
 func (me mapEncoder) encodeMapStringBool(e *encodeState, m map[string]bool) {
 	e.WriteByte(typeObject)
-	lfSize := encodeLengthField(e.scratch[:], uint64(len(m)), false)
-	e.Write(e.scratch[:lfSize])
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -986,6 +927,7 @@ func (me mapEncoder) encodeMapStringBool(e *encodeState, m map[string]bool) {
 			e.WriteByte(typeFalse)
 		}
 	}
+	e.WriteByte(typeContainerEnd)
 }
 
 func newMapEncoder(t reflect.Type) encoderFunc {
@@ -1056,13 +998,12 @@ type arrayEncoder struct {
 
 func (ae arrayEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 	n := v.Len()
-	// Write array type code and chunk header (single chunk with element count)
+	// Write array type code, elements, and container end marker
 	e.WriteByte(typeArray)
-	lfSize := encodeLengthField(e.scratch[:], uint64(n), false)
-	e.Write(e.scratch[:lfSize])
 	for i := 0; i < n; i++ {
 		ae.elemEnc(e, v.Index(i), opts)
 	}
+	e.WriteByte(typeContainerEnd)
 }
 
 func newArrayEncoder(t reflect.Type) encoderFunc {

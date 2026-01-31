@@ -538,9 +538,8 @@ func TestBigNumberMarshalAsStruct(t *testing.T) {
 	// When marshaled directly, it encodes as a regular struct (not as a native BigNumber).
 	// Users should use *big.Int or *big.Float for arbitrary-precision numbers.
 	bn := BigNumber{
-		Significand: []byte{0x2a}, // 42
-		Exponent:    0,
-		Negative:    false,
+		Significand: big.NewInt(42),
+		Exponent:    big.NewInt(0),
 	}
 
 	data, err := Marshal(bn)
@@ -559,14 +558,11 @@ func TestBigNumberMarshalAsStruct(t *testing.T) {
 		t.Fatalf("Unmarshal BigNumber error: %v", err)
 	}
 
-	if !bytes.Equal(got.Significand, bn.Significand) {
+	if got.Significand.Cmp(bn.Significand) != 0 {
 		t.Errorf("Significand mismatch: got %v, want %v", got.Significand, bn.Significand)
 	}
-	if got.Exponent != bn.Exponent {
-		t.Errorf("Exponent = %d, want %d", got.Exponent, bn.Exponent)
-	}
-	if got.Negative != bn.Negative {
-		t.Errorf("Negative = %v, want %v", got.Negative, bn.Negative)
+	if got.Exponent.Cmp(bn.Exponent) != 0 {
+		t.Errorf("Exponent = %v, want %v", got.Exponent, bn.Exponent)
 	}
 }
 

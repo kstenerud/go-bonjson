@@ -82,7 +82,6 @@ var supportedCapabilities = map[string]bool{
 	// Supported: Platform capabilities
 	"uint64":        true,
 	"int64":         true,
-	"float16":       true,
 	"negative_zero": true,
 
 	// Not supported: Raw byte strings (Go strings must be valid UTF-8)
@@ -100,7 +99,6 @@ var recognizedOptions = map[string]string{
 	"max_depth":            "integer",
 	"max_container_size":   "integer",
 	"max_string_length":    "integer",
-	"max_chunks":           "integer",
 	"max_document_size":    "integer",
 	// String options with enum values
 	"nan_infinity_behavior": "string:reject,allow,stringify",
@@ -121,8 +119,6 @@ var recognizedErrorTypes = map[string]bool{
 	"invalid_data":                true,
 	"invalid_object_key":          true, // non-string key in object
 	"value_out_of_range":          true,
-	"too_many_chunks":             true,
-	"empty_chunk_continuation":    true,
 	"max_depth_exceeded":          true,
 	"max_string_length_exceeded":  true,
 	"max_container_size_exceeded": true,
@@ -581,7 +577,7 @@ func runEncodeErrorTest(t *testing.T, tc testCase) {
 	// Skip tests that require encoder options we don't support
 	if tc.Options != nil {
 		// The encoder only supports nan_infinity option
-		unsupportedEncoderOpts := []string{"max_depth", "max_string_length", "max_chunks", "max_container_size", "max_document_size", "allow_nul"}
+		unsupportedEncoderOpts := []string{"max_depth", "max_string_length", "max_container_size", "max_document_size", "allow_nul"}
 		for _, opt := range unsupportedEncoderOpts {
 			if _, has := tc.Options[opt]; has {
 				t.Skipf("Encoder does not support %s option", opt)
@@ -642,7 +638,7 @@ func runDecodeErrorTest(t *testing.T, tc testCase) {
 }
 
 func hasDecoderOptions(opts map[string]interface{}) bool {
-	decoderOpts := []string{"allow_nul", "nan_infinity_behavior", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_chunks", "max_container_size", "max_document_size"}
+	decoderOpts := []string{"allow_nul", "nan_infinity_behavior", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_container_size", "max_document_size"}
 	for _, opt := range decoderOpts {
 		if _, ok := opts[opt]; ok {
 			return true
@@ -918,11 +914,6 @@ func applyDecoderOptions(dec *Decoder, opts map[string]interface{}) {
 	if v, ok := opts["max_string_length"]; ok {
 		if length, ok := toInt64(v); ok {
 			dec.SetMaxStringLength(length)
-		}
-	}
-	if v, ok := opts["max_chunks"]; ok {
-		if chunks, ok := toInt(v); ok {
-			dec.SetMaxChunks(chunks)
 		}
 	}
 	if v, ok := opts["max_container_size"]; ok {

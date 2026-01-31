@@ -461,20 +461,20 @@ func BenchmarkUnmarshalAllocations(b *testing.B) {
 // Wire Format Benchmarks (Low-Level)
 // ============================================================================
 
-func BenchmarkEncodeLengthField(b *testing.B) {
+func BenchmarkEncodeLEB128(b *testing.B) {
 	var buf [16]byte
 	for i := 0; i < b.N; i++ {
-		encodeLengthField(buf[:], 12345, false)
+		encodeLEB128(buf[:], 12345)
 	}
 }
 
-func BenchmarkDecodeLengthField(b *testing.B) {
+func BenchmarkDecodeLEB128(b *testing.B) {
 	var buf [16]byte
-	n := encodeLengthField(buf[:], 12345, false)
+	n := encodeLEB128(buf[:], 12345)
 	data := buf[:n]
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		decodeLengthField(data)
+		decodeLEB128(data)
 	}
 }
 
@@ -670,72 +670,54 @@ func BenchmarkUnmarshalByteSlice(b *testing.B) {
 // Low-Level Wire Format Benchmarks
 // ============================================================================
 
-func BenchmarkEncodeLengthPayload_Small(b *testing.B) {
+func BenchmarkEncodeLEB128_Small(b *testing.B) {
 	dst := make([]byte, 16)
 	for i := 0; i < b.N; i++ {
-		encodeLengthPayload(dst, 100)
+		encodeLEB128(dst, 100)
 	}
 }
 
-func BenchmarkEncodeLengthPayload_Medium(b *testing.B) {
+func BenchmarkEncodeLEB128_Medium(b *testing.B) {
 	dst := make([]byte, 16)
 	for i := 0; i < b.N; i++ {
-		encodeLengthPayload(dst, 10000)
+		encodeLEB128(dst, 10000)
 	}
 }
 
-func BenchmarkEncodeLengthPayload_Large(b *testing.B) {
+func BenchmarkEncodeLEB128_Large(b *testing.B) {
 	dst := make([]byte, 16)
 	for i := 0; i < b.N; i++ {
-		encodeLengthPayload(dst, 1000000000)
+		encodeLEB128(dst, 1000000000)
 	}
 }
 
-func BenchmarkEncodeLengthField_Small(b *testing.B) {
+func BenchmarkDecodeLEB128_Small(b *testing.B) {
 	dst := make([]byte, 16)
-	for i := 0; i < b.N; i++ {
-		encodeLengthField(dst, 50, false)
-	}
-}
-
-func BenchmarkEncodeLengthField_Medium(b *testing.B) {
-	dst := make([]byte, 16)
-	for i := 0; i < b.N; i++ {
-		encodeLengthField(dst, 5000, false)
-	}
-}
-
-func BenchmarkEncodeLengthField_Large(b *testing.B) {
-	dst := make([]byte, 16)
-	for i := 0; i < b.N; i++ {
-		encodeLengthField(dst, 500000000, false)
-	}
-}
-
-func BenchmarkDecodeLengthPayload_Small(b *testing.B) {
-	dst := make([]byte, 16)
-	encodeLengthPayload(dst, 100)
+	n := encodeLEB128(dst, 100)
+	data := dst[:n]
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		decodeLengthPayload(dst)
+		decodeLEB128(data)
 	}
 }
 
-func BenchmarkDecodeLengthPayload_Medium(b *testing.B) {
+func BenchmarkDecodeLEB128_Medium(b *testing.B) {
 	dst := make([]byte, 16)
-	encodeLengthPayload(dst, 10000)
+	n := encodeLEB128(dst, 10000)
+	data := dst[:n]
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		decodeLengthPayload(dst)
+		decodeLEB128(data)
 	}
 }
 
-func BenchmarkDecodeLengthPayload_Large(b *testing.B) {
+func BenchmarkDecodeLEB128_Large(b *testing.B) {
 	dst := make([]byte, 16)
-	encodeLengthPayload(dst, 1000000000)
+	n := encodeLEB128(dst, 1000000000)
+	data := dst[:n]
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		decodeLengthPayload(dst)
+		decodeLEB128(data)
 	}
 }
 

@@ -188,13 +188,13 @@ func TestDecoderMoreOnEmptyInput(t *testing.T) {
 }
 
 func TestDecoderMoreAfterChunkExhausted(t *testing.T) {
-	// Test More() correctly identifies when chunk is exhausted
-	// With chunked format, More() returns false when chunkRemaining is 0 and no continuation
+	// Test More() correctly identifies when container is exhausted
+	// With delimiter-terminated format, More() returns false when 0xFE end marker is found
 	// Build an array with one element, and read it
 	data := []byte{
 		typeArray,
-		0x04,      // chunk: count=1, no continuation
-		typeNull,  // the one element
+		typeNull,        // the one element
+		typeContainerEnd, // end marker
 	}
 	dec := NewDecoder(bytes.NewReader(data))
 
@@ -331,12 +331,6 @@ func TestDecoderDisallowUnknownFields(t *testing.T) {
 	}
 }
 
-func TestDecoderSetMaxChunks(t *testing.T) {
-	// Just verify the method can be called
-	dec := NewDecoder(strings.NewReader(""))
-	dec.SetMaxChunks(200)
-}
-
 func TestDecoderAllowNUL(t *testing.T) {
 	// Just verify the method can be called
 	dec := NewDecoder(strings.NewReader(""))
@@ -344,18 +338,19 @@ func TestDecoderAllowNUL(t *testing.T) {
 }
 
 func TestDecoderSetMaxDepth(t *testing.T) {
-	// Create nested arrays using chunked format
+	// Create nested arrays using delimiter-terminated format
 	depth := 20
 	var buf bytes.Buffer
-	// Each nested array (except innermost) contains one element
-	for i := 0; i < depth-1; i++ {
+	// Each nested array
+	for i := 0; i < depth; i++ {
 		buf.WriteByte(typeArray)
-		buf.WriteByte(0x04) // chunk: count=1, no continuation
 	}
-	// Innermost array contains null
-	buf.WriteByte(typeArray)
-	buf.WriteByte(0x04) // chunk: count=1, no continuation
+	// Innermost value
 	buf.WriteByte(typeNull)
+	// Close all arrays
+	for i := 0; i < depth; i++ {
+		buf.WriteByte(typeContainerEnd)
+	}
 
 	// Should succeed with adequate depth
 	dec1 := NewDecoder(bytes.NewReader(buf.Bytes()))
@@ -1224,7 +1219,6 @@ func TestStreamTokenTruncatedData(t *testing.T) {
 	}{
 		{"truncated_uint", []byte{typeUintBase + 3}},
 		{"truncated_sint", []byte{typeSintBase + 3}},
-		{"truncated_float16", []byte{typeFloat16}},
 		{"truncated_float32", []byte{typeFloat32, 0x00}},
 		{"truncated_float64", []byte{typeFloat64, 0x00, 0x00, 0x00}},
 		{"truncated_short_string", []byte{typeShortStringBase + 5, 'a'}},

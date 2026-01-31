@@ -322,15 +322,13 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 	})
 
 	t.Run("DuplicateKeyError", func(t *testing.T) {
-		// Object with duplicate keys - new chunked format:
-		// typeObject + length_field(count=2) + pairs
-		// length_field for count=2: (2 << 1) << 1 = 8 = 0x08
-		// Note: small int values use new encoding: value + 100
+		// Object with duplicate keys - delimiter-terminated format:
+		// typeObject + pairs + typeContainerEnd
 		data := []byte{
 			typeObject,
-			0x08, // chunk header: 2 pairs, no continuation
 			typeShortStringBase + 1, 'a', 0x65, // "a": 1 (1+100=0x65)
 			typeShortStringBase + 1, 'a', 0x66, // "a": 2 (duplicate) (2+100=0x66)
+			typeContainerEnd,
 		}
 		var v map[string]int
 		n, err := UnmarshalWithByteCount(data, &v)
@@ -346,14 +344,15 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 
 	t.Run("MaxDepthError", func(t *testing.T) {
 		// Create deeply nested arrays exceeding default max depth
-		// New format: typeArray + chunk_header(count=1) + nested_array...
+		// New format: typeArray + elements + typeContainerEnd
 		var buf bytes.Buffer
 		for i := 0; i < 1001; i++ {
 			buf.WriteByte(typeArray)
-			buf.WriteByte(0x04) // chunk header: 1 element, no continuation ((1 << 1) << 1 = 4)
 		}
 		buf.WriteByte(typeNull)
-		// No end markers needed in chunked format
+		for i := 0; i < 1001; i++ {
+			buf.WriteByte(typeContainerEnd)
+		}
 		var v any
 		n, err := UnmarshalWithByteCount(buf.Bytes(), &v)
 		if err == nil {
@@ -384,11 +383,11 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 
 	t.Run("SyntaxError_NonStringKey", func(t *testing.T) {
 		// Object with non-string key
-		// New format: typeObject + chunk_header(count=1) + key + value
+		// New format: typeObject + key + value + typeContainerEnd
 		data := []byte{
 			typeObject,
-			0x04,       // chunk header: 1 pair, no continuation
 			0x69, 0x65, // int key (5 in new encoding: 5+100=105=0x69), then int value 1 (1+100=0x65)
+			typeContainerEnd,
 		}
 		var v map[string]int
 		n, err := UnmarshalWithByteCount(data, &v)
@@ -979,16 +978,14 @@ func TestDecodeTruncatedData(t *testing.T) {
 // ============================================================================
 
 func TestDecodeInvalidTypeCode(t *testing.T) {
-	// New reserved ranges: 0xc9-0xcf and 0xfa-0xff
+	// Reserved type codes: 0xC9, 0xFA, 0xFB
 	tests := []struct {
 		name string
 		data []byte
 	}{
 		{"reserved_0xc9", []byte{0xc9}},
-		{"reserved_0xca", []byte{0xca}},
-		{"reserved_0xcf", []byte{0xcf}},
 		{"reserved_0xfa", []byte{0xfa}},
-		{"reserved_0xff", []byte{0xff}},
+		{"reserved_0xfb", []byte{0xfb}},
 	}
 
 	for _, tt := range tests {
@@ -1450,14 +1447,6 @@ func TestNullInStringErrorMessage(t *testing.T) {
 	err := &NullInStringError{Offset: 789}
 	msg := err.Error()
 	if !strings.Contains(msg, "NUL") || !strings.Contains(msg, "789") {
-		t.Errorf("unexpected error message: %s", msg)
-	}
-}
-
-func TestTooManyChunksErrorMessage(t *testing.T) {
-	err := &TooManyChunksError{Count: 100, Max: 50, Offset: 999}
-	msg := err.Error()
-	if !strings.Contains(msg, "100") || !strings.Contains(msg, "50") {
 		t.Errorf("unexpected error message: %s", msg)
 	}
 }
@@ -2868,14 +2857,14 @@ func TestPointerFieldCompatibility(t *testing.T) {
 func TestErrorOffsets(t *testing.T) {
 	t.Run("duplicate_key_offset", func(t *testing.T) {
 		// Object with duplicate key: {"a":1,"a":2}
-		// New chunked format: typeObject + chunk_header + pairs
+		// Delimiter-terminated format: typeObject + pairs + typeContainerEnd
 		data := []byte{
 			typeObject,
-			0x08, // chunk header: 2 pairs, no continuation
 			typeShortStringBase + 1, 'a', // key "a"
 			0x65, // value 1 (1+100=0x65)
 			typeShortStringBase + 1, 'a', // duplicate key "a"
 			0x66, // value 2 (2+100=0x66)
+			typeContainerEnd,
 		}
 		var v any
 		err := Unmarshal(data, &v)
@@ -2896,8 +2885,8 @@ func TestErrorOffsets(t *testing.T) {
 
 	t.Run("truncated_data_offset", func(t *testing.T) {
 		// Array with truncated element
-		// New format: typeArray + chunk_header(count=1) + truncated_uint
-		data := []byte{typeArray, 0x04, typeUintBase + 1} // array with incomplete 2-byte uint
+		// New format: typeArray + truncated_uint (no end marker = truncated)
+		data := []byte{typeArray, typeUintBase + 1} // array with incomplete 2-byte uint
 		var v any
 		err := Unmarshal(data, &v)
 		if err == nil {
@@ -2937,13 +2926,16 @@ func TestErrorOffsets(t *testing.T) {
 	})
 
 	t.Run("max_depth_offset", func(t *testing.T) {
-		// Nested arrays that exceed depth (new chunked format)
-		// Each nested array: typeArray + chunk_header(count=1)
+		// Nested arrays that exceed depth (delimiter-terminated format)
+		// Each nested array: typeArray + elements + typeContainerEnd
 		data := []byte{
-			typeArray, 0x04, // outer array with 1 element
-			typeArray, 0x04, // nested array with 1 element
-			typeArray, 0x04, // innermost array with 1 element
-			0x65, // value 1 (1+100=0x65)
+			typeArray,        // outer array
+			typeArray,        // nested array
+			typeArray,        // innermost array
+			0x65,             // value 1 (1+100=0x65)
+			typeContainerEnd, // end innermost
+			typeContainerEnd, // end nested
+			typeContainerEnd, // end outer
 		}
 		dec := NewDecoder(bytes.NewReader(data))
 		dec.SetMaxDepth(2)
@@ -3109,16 +3101,6 @@ func TestErrorFieldAccess(t *testing.T) {
 		}
 	})
 
-	t.Run("too_many_chunks_fields", func(t *testing.T) {
-		err := &TooManyChunksError{Count: 150, Max: 100, Offset: 50}
-		if err.Count != 150 {
-			t.Error("Count field should be accessible")
-		}
-		if err.Max != 100 {
-			t.Error("Max field should be accessible")
-		}
-	})
-
 	t.Run("value_range_error_fields", func(t *testing.T) {
 		err := &ValueRangeError{Value: "123456789", Offset: 10}
 		if err.Value != "123456789" {
@@ -3139,15 +3121,12 @@ func TestAllErrorTypesPrintable(t *testing.T) {
 		&DuplicateKeyError{Key: "test", Offset: 0},
 		&InvalidUTF8Error{Offset: 0},
 		&NullInStringError{Offset: 0},
-		&TooManyChunksError{Count: 1, Max: 1, Offset: 0},
-		&EmptyChunkContinuationError{Offset: 0},
 		&ValueRangeError{Value: "test", Offset: 0},
 		&MaxDepthError{Depth: 1, Offset: 0},
 		&InvalidTypeCodeError{TypeCode: 0, Offset: 0},
 		&TruncatedDataError{Expected: 1, Got: 0, Offset: 0},
 		&InvalidValueError{Value: "test", Offset: 0},
 		&TrailingDataError{Offset: 0},
-		&NonCanonicalLengthError{Offset: 0},
 		&UnclosedContainerError{ContainerType: "array", Offset: 0},
 		&MaxStringLengthError{Length: 1, Max: 1, Offset: 0},
 	}
