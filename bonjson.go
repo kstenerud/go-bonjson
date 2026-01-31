@@ -69,7 +69,6 @@
 //   - Duplicate object keys are rejected
 //   - Invalid UTF-8 in strings is rejected (not replaced)
 //   - NUL characters in strings are rejected by default
-//   - Chunked strings are rejected by default
 //   - NaN and Infinity values are rejected
 //
 // These behaviors can be configured using Decoder options, but the secure

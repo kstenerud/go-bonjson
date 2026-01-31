@@ -22,6 +22,11 @@
 // THE SOFTWARE.
 //
 
+// ABOUTME: BONJSON encoding (Go values to binary). Provides Marshal(),
+// ABOUTME: AppendMarshal(), and the Marshaler interface. Uses
+// ABOUTME: panic/recover for error propagation and sync.Pool for
+// ABOUTME: buffer reuse.
+
 package bonjson
 
 import (

@@ -148,7 +148,7 @@ func (dec *Decoder) SetInvalidUTF8Mode(mode InvalidUTF8Mode) { dec.d.invalidUTF8
 // Available modes:
 //   - DupKeyReject: Return error on duplicate keys (default, most secure)
 //   - DupKeyKeepFirst: Keep first value, silently ignore duplicates (less secure)
-//   - DupKeyReplace: Replace with latest value (DANGEROUS - see warning)
+//   - DupKeyKeepLast: Replace with latest value (DANGEROUS - see warning)
 //
 // Note: Doing anything other than rejecting is DANGEROUS! See the documentation for
 // each DuplicateKeyMode constant for security warnings.

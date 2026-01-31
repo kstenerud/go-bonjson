@@ -22,6 +22,10 @@
 // THE SOFTWARE.
 //
 
+// ABOUTME: Struct field metadata caching and duplicate key detection.
+// ABOUTME: BFS field extraction with tag parsing, field shadowing,
+// ABOUTME: and O(1) duplicate detection via boolean slice indexing.
+
 package bonjson
 
 import (

@@ -22,6 +22,9 @@
 // THE SOFTWARE.
 //
 
+// ABOUTME: Struct tag parsing for "bonjson" and "json" tags.
+// ABOUTME: Supports name, omitempty, omitzero, and string options.
+
 package bonjson
 
 import "strings"

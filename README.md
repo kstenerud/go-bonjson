@@ -8,7 +8,7 @@ BONJSON provides significant advantages over text-based JSON:
 
 | Feature            | BONJSON           | JSON                          |
 |--------------------|-------------------|-------------------------------|
-| **Parsing Speed**  | Up to 15x faster  |                               |
+| **Parsing Speed**  | Up to 8x faster   |                               |
 | **Size**           | More compact      | Verbose text                  |
 | **Security**       | Strict by default | Permissive                    |
 | **UTF-8**          | Rejects invalid   | Omits or replaces with U+FFFD |
@@ -18,33 +18,33 @@ BONJSON provides significant advantages over text-based JSON:
 
 | Test                           | Time/op (ns)  | Bytes/op  | Allocs/op    | Notes       |
 |--------------------------------|---------------|-----------|--------------|-------------|
-| UnmarshalInt_BONJSON           |         20.47 |         0 |            0 | 2.5x faster |
-| UnmarshalInt_JSON              |         55.99 |       144 |            1 |             |
-| MarshalFloat_BONJSON           |         31.11 |        16 |            1 | 2x faster   |
-| MarshalFloat_JSON              |         66.58 |        16 |            1 |             |
-| UnmarshalFloat_BONJSON         |         22.41 |         0 |            0 | 5x faster   |
-| UnmarshalFloat_JSON            |         96.93 |       144 |            1 |             |
-| MarshalLongString_BONJSON      |        169.30 |      1040 |            2 | 3.5x faster |
-| MarshalLongString_JSON         |        586.90 |      1040 |            2 |             |
-| UnmarshalLongString_BONJSON    |        199.50 |      1024 |            1 | 15x faster  |
-| UnmarshalLongString_JSON       |       2981.00 |      1168 |            2 |             |
-| UnmarshalStruct_BONJSON        |        210.50 |        24 |            2 | 2.5x faster |
-| UnmarshalStruct_JSON           |        570.90 |       240 |            6 |             |
-| MarshalMap_BONJSON             |        252.70 |       144 |            2 | 2x faster   |
-| MarshalMap_JSON                |        503.30 |       448 |           12 |             |
-| UnmarshalMap_BONJSON           |        140.30 |        88 |            6 | 6x faster   |
-| UnmarshalMap_JSON              |        881.70 |       528 |           27 |             |
+| UnmarshalInt_BONJSON           |         26.76 |         0 |            0 | 2.7x faster |
+| UnmarshalInt_JSON              |         72.07 |       144 |            1 |             |
+| MarshalFloat_BONJSON           |         36.41 |        16 |            1 | 2.3x faster |
+| MarshalFloat_JSON              |         83.12 |        16 |            1 |             |
+| UnmarshalFloat_BONJSON         |         29.68 |         0 |            0 | 4.1x faster |
+| UnmarshalFloat_JSON            |        122.57 |       144 |            1 |             |
+| MarshalLongString_BONJSON      |        240.37 |      1040 |            2 | 3.2x faster |
+| MarshalLongString_JSON         |        766.40 |      1040 |            2 |             |
+| UnmarshalLongString_BONJSON    |        502.00 |      1024 |            1 | 7.4x faster |
+| UnmarshalLongString_JSON       |       3731.00 |      1168 |            2 |             |
+| UnmarshalStruct_BONJSON        |        240.83 |        24 |            2 | 3.0x faster |
+| UnmarshalStruct_JSON           |        724.63 |       240 |            6 |             |
+| MarshalMap_BONJSON             |        324.53 |       144 |            2 | 2.0x faster |
+| MarshalMap_JSON                |        651.30 |       448 |           12 |             |
+| UnmarshalMap_BONJSON           |        140.30 |        88 |            6 | 7.9x faster |
+| UnmarshalMap_JSON              |       1111.67 |       528 |           27 |             |
 
 | Test                           | BONJSON bytes | JSON bytes | Ratio % |
 |--------------------------------|---------------|------------|---------|
 | EncodedSize/int_small          |             1 |          2 |  50.00  |
-| EncodedSize/int_large          |             4 |          7 |  57.14  |
+| EncodedSize/int_large          |             5 |          7 |  71.43  |
 | EncodedSize/float              |             9 |         16 |  56.25  |
 | EncodedSize/string_short       |             6 |          7 |  85.71  |
-| EncodedSize/string_long        |           103 |        102 | 101.00  |
+| EncodedSize/string_long        |           102 |        102 | 100.00  |
 | EncodedSize/bool               |             1 |          4 |  25.00  |
 | EncodedSize/slice_int          |            12 |         22 |  54.55  |
-| EncodedSize/struct_medium      |            62 |         82 |  75.61  |
+| EncodedSize/struct_medium      |            64 |         82 |  78.05  |
 | EncodedSize/map_mixed          |            28 |         41 |  68.29  |
 
 ## Drop-in Replacement
@@ -189,12 +189,12 @@ If these interfaces aren't implemented, the library falls back to `encoding.Text
 
 BONJSON enforces strict security rules by default:
 
-| Rule                      | Default  | Option to Allow      |
-|---------------------------|----------|----------------------|
-| Duplicate object keys     | Rejected | NO                   |
-| Invalid UTF-8             | Rejected | NO                   |
-| NUL characters in strings | Rejected | `Decoder.AllowNUL()` |
-| NaN/Infinity              | Rejected | NO                   |
+| Rule                      | Default  | Option to Allow                      |
+|---------------------------|----------|--------------------------------------|
+| Duplicate object keys     | Rejected | `Decoder.SetDuplicateKeyMode()`      |
+| Invalid UTF-8             | Rejected | `Decoder.SetInvalidUTF8Mode()`       |
+| NUL characters in strings | Rejected | `Decoder.AllowNUL()`                 |
+| NaN/Infinity              | Rejected | `Decoder.SetNaNInfinityMode()`       |
 
 ### Configurable Limits
 
@@ -202,7 +202,7 @@ BONJSON enforces strict security rules by default:
 dec := bonjson.NewDecoder(r)
 dec.SetMaxStringLength(1024 * 1024)  // 1 MB max string
 dec.SetMaxDepth(100)                 // 100 levels max nesting
-dec.SetMaxChunks(200)                // 200 chunks max per string (default 100)
+dec.SetMaxContainerSize(10000)       // 10000 elements max per container
 ```
 
 ## Type Mapping

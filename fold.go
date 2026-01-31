@@ -22,6 +22,9 @@
 // THE SOFTWARE.
 //
 
+// ABOUTME: Case-insensitive field name matching using Unicode
+// ABOUTME: SimpleFold for case-folded struct field lookup.
+
 package bonjson
 
 import (

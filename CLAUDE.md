@@ -5,8 +5,8 @@
 This is a Go implementation of BONJSON, a binary JSON-compatible format. It provides a drop-in replacement for `encoding/json` with better performance, smaller size, and enhanced security.
 
 **Key advantages over JSON:**
-- 2-15x faster encoding/decoding
-- 25-75% smaller payload size
+- 1.1-8x faster encoding, 2.6-8x faster decoding
+- 25-100% of JSON payload size (biggest savings on bools, ints, floats)
 - Native integer type preservation (int64/uint64 instead of float64)
 - Security-first defaults (duplicate key rejection, UTF-8 validation, NUL rejection)
 
@@ -34,7 +34,7 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 | `encode.go` | `Marshal()`, `AppendMarshal()`, `Marshaler` interface |
 | `decode.go` | `Unmarshal()`, `UnmarshalWithByteCount()`, `Unmarshaler` interface |
 | `stream.go` | `Encoder`/`Decoder` for streaming I/O, `RawMessage`, Token API |
-| `wire.go` | Low-level binary encoding: length fields, integers, floats, strings, BigNumber |
+| `wire.go` | Low-level binary encoding: integers, floats, strings, BigNumber, zigzag LEB128 |
 | `types.go` | Wire format type codes and security limit constants |
 | `fields.go` | Struct field caching, duplicate key detection infrastructure |
 | `tags.go` | Struct tag parsing ("bonjson" tag, fallback to "json" tag) |
@@ -49,9 +49,9 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 | `decode_test.go` | Decoding, type coercion, struct fields, errors |
 | `encode_test.go` | Encoding, collections, structs, custom types, big numbers |
 | `stream_test.go` | Streaming encoder/decoder, Token API, concatenated documents |
-| `wire_test.go` | Length fields, integers, floats, BigNumber encoding |
+| `wire_test.go` | Integers, floats, BigNumber encoding, zigzag LEB128 |
 | `security_test.go` | Duplicate keys, UTF-8, NUL, NaN/Infinity, configurable limits |
-| `security_attack_test.go` | DoS attack scenarios (deep nesting, large payloads, chunk bombs) |
+| `security_attack_test.go` | DoS attack scenarios (deep nesting, large payloads, malformed data) |
 | `bench_test.go` | Performance comparisons vs encoding/json |
 
 
@@ -64,12 +64,12 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 4. Encoder cache (sync.Map) avoids repeated reflection for custom types
 
 ### Type-Specific Encoding
-- **Small integers** (-100 to +100): Single byte (type code = value + 100, so 0x00-0xc8)
-- **Large integers**: Type code + 1-8 bytes little-endian
-- **Floats**: Auto-selects bfloat16 (3 bytes), float32 (5 bytes), or float64 (9 bytes)
-- **Short strings** (0-15 bytes): Type code encodes length (0xe0-0xef)
-- **Long strings**: Header (0xf0) + chunked length fields + data
-- **Arrays/Objects**: Type code (0xf8/0xf9) + chunked element counts
+- **Small integers** (-100 to +100): Single byte (type code = value + 100, so 0x00-0xC8)
+- **Large integers**: Type code + native-size bytes (1, 2, 4, or 8) little-endian
+- **Floats**: Auto-selects float32 (5 bytes) or float64 (9 bytes)
+- **Short strings** (0-15 bytes): Type code encodes length (0xD0-0xDF)
+- **Long strings**: 0xFF + raw data bytes + 0xFF (delimiter-terminated)
+- **Arrays/Objects**: Type code (0xFC/0xFD) + values + 0xFE end marker (delimiter-terminated)
 - **Maps**: Sorted by key for deterministic output
 - **Structs**: Uses cached field metadata, respects omitempty/omitzero
 
@@ -91,15 +91,14 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 - **Duplicate keys**: Tracked via `seenFields` boolean slice for structs, MapIndex check for maps
 - **UTF-8**: `utf8.Valid()` fast path, byte-by-byte scan for error position
 - **NUL characters**: `bytes.IndexByte()` check (configurable via `AllowNUL()`)
-- **NaN/Infinity**: Rejected in float decoders and BigNumber special values
+- **NaN/Infinity**: Rejected in float decoders (BigNumber cannot represent these values)
 
 ### Configurable Limits (on Decoder)
 All defaults follow the BONJSON spec "Resource Limits" table:
 - `SetMaxDocumentSize(n)` - default 2 GB (2,000,000,000 bytes)
-- `SetMaxDepth(n)` - default 512
+- `SetMaxDepth(n)` - default 500
 - `SetMaxContainerSize(n)` - default 1,000,000 elements
 - `SetMaxStringLength(n)` - default 10 MB (10,000,000 bytes)
-- `SetMaxChunks(n)` - default 100
 - `AllowNUL()` - allow NUL characters in strings
 - `DisallowUnknownFields()` - reject unknown struct fields
 
@@ -114,7 +113,7 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 **Duplicate Key Handling** (`SetDuplicateKeyMode`):
 - `DupKeyReject` (default) - return error on duplicate keys
 - `DupKeyKeepFirst` - keep first value, silently ignore duplicates
-- `DupKeyReplace` - replace with latest value (DANGEROUS - see warning in docs)
+- `DupKeyKeepLast` - replace with latest value (DANGEROUS - see warning in docs)
 
 **NaN/Infinity Handling** (`SetNaNInfinityMode`):
 - `NaNInfReject` (default) - return error on NaN/Infinity (JSON compatible)
@@ -124,55 +123,47 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 
 ## Wire Format
 
-### Type Codes
+### Type Codes (Phase 2 format)
 ```
-0x00-0xc8  Small integers (-100 to +100, type code = value + 100)
-0xc9-0xcf  Reserved
-0xd0-0xd7  Unsigned integers (1-8 bytes)
-0xd8-0xdf  Signed integers (1-8 bytes)
-0xe0-0xef  Short strings (0-15 bytes)
-0xf0       Long string (chunked)
-0xf1       BigNumber
-0xf2       Float16 (bfloat16)
-0xf3       Float32
-0xf4       Float64
-0xf5       Null
-0xf6       False
-0xf7       True
-0xf8       Array (chunked)
-0xf9       Object (chunked)
-0xfa-0xff  Reserved
+0x00-0xC8  Small integers (-100 to +100, type code = value + 100)
+0xC9       Reserved
+0xCA       BigNumber (zigzag LEB128 exponent + zigzag LEB128 significand)
+0xCB       Float32
+0xCC       Float64
+0xCD       Null
+0xCE       False
+0xCF       True
+0xD0-0xDF  Short strings (0-15 bytes, length = tc & 0x0F)
+0xE0-0xE3  Unsigned integers (native sizes: 1, 2, 4, 8 bytes)
+0xE4-0xE7  Signed integers (native sizes: 1, 2, 4, 8 bytes)
+0xE8-0xFB  Reserved
+0xFC       Array (delimiter-terminated)
+0xFD       Object (delimiter-terminated)
+0xFE       Container end marker
+0xFF       Long string (0xFF + data + 0xFF)
 ```
 
 Type codes are arranged to enable efficient mask-based detection:
-- Unsigned integers: `tc&0xf8 == 0xd0` matches 0xd0-0xd7, byte count = `(tc&0x07)+1`
-- Signed integers: `tc&0xf8 == 0xd8` matches 0xd8-0xdf, byte count = `(tc&0x07)+1`
-- Short strings: `tc&0xf0 == 0xe0` matches 0xe0-0xef, length = `tc&0x0f`
+- Short strings: `tc&0xF0 == 0xD0` matches 0xD0-0xDF, length = `tc&0x0F`
+- Unsigned integers: `tc&0xFC == 0xE0` matches 0xE0-0xE3, size index = `tc&0x03`, byte count = `1 << sizeIndex`
+- Signed integers: `tc&0xFC == 0xE4` matches 0xE4-0xE7, size index = `tc&0x03`, byte count = `1 << sizeIndex`
 
-### Chunked Containers
-Arrays and objects use chunked encoding for streaming support:
-- Type code (0xf8 or 0xf9) followed by one or more length field chunks
-- Each chunk's length field encodes: `(element_count << 1) | continuation_bit`
-- continuation_bit=1 means more chunks follow; continuation_bit=0 ends container
-- Empty chunks with continuation bit set (byte 0x02) are invalid
+### Delimiter-Terminated Containers
+Arrays and objects use end-marker termination:
+- Array: 0xFC + values + 0xFE
+- Object: 0xFD + key-value pairs + 0xFE
+- This enables streaming without knowing element count up front
 
-### Chunked Long Strings
-Long strings (0xf0) also use chunked encoding:
-- Multiple chunks of raw bytes, each with length field
-- UTF-8 validation happens on the complete assembled string, not per-chunk
-- This allows UTF-8 multi-byte sequences to span chunk boundaries
+### Long Strings
+Long strings (>15 bytes) use delimiter termination:
+- 0xFF + raw data bytes + 0xFF
+- The data bytes themselves cannot contain 0xFF (strings are UTF-8, and 0xFF is not valid UTF-8)
+- UTF-8 validation happens on the complete string
 
-### Length Field Encoding
-Variable-length encoding using trailing zero bits:
-- Single byte: payload fits in 7 bits (bit 0 = 1)
-- Multi-byte: trailing zeros count determines byte count
-- 9-byte: header 0x00 + 8-byte little-endian payload
-
-### BigNumber Format
-Header byte: `[sig_len:5][exp_len:2][negative:1]`
-- Significand: 0-31 bytes little-endian
-- Exponent: 0, 1, 2, or 4 bytes (base-10)
-- Special values (sigLen=0): zero, infinity (rejected), NaN (rejected)
+### BigNumber Format (Phase 2)
+Encoded as 0xCA + zigzag LEB128 exponent (base-10) + zigzag LEB128 significand.
+- Both values use zigzag encoding for signed integers, then unsigned LEB128
+- No special value encoding; NaN and Infinity are not representable in BigNumber
 
 
 ## Struct Field Caching
@@ -216,14 +207,12 @@ For typical structs (<20 fields), linear search beats hash map lookup. The field
 - Reject invalid UTF-8 in strings
 - Reject NUL characters in strings
 - Reject NaN and Infinity values
-- Reject empty chunks with continuation bit set (byte 0x02)
-- Enforce depth, string length, and chunk limits
+- Enforce depth, string length, and container size limits
 
 ### Configurable Relaxations
 - `AllowNUL()` - permit NUL characters
 - `SetMaxStringLength(0)` - unlimited string length (not recommended)
 - `SetMaxDepth(0)` - unlimited nesting (not recommended)
-- `SetMaxChunks(0)` - unlimited chunks (not recommended)
 - `SetNaNInfinityMode(NaNInfAllow)` - allow NaN/Infinity as float values
 - `SetNaNInfinityMode(NaNInfStringify)` - convert NaN/Infinity to strings
 
@@ -313,7 +302,6 @@ go test -v -run TestValidationFunctions
 | `invalid_utf8` | string | Invalid UTF-8 handling: `reject`, `replace`, `delete`, `ignore`, `pass_through` |
 | `max_depth` | integer | Maximum container nesting depth |
 | `max_string_length` | integer | Maximum string length in bytes |
-| `max_chunks` | integer | Maximum string chunks |
 | `max_container_size` | integer | Maximum elements per container |
 | `max_document_size` | integer | Maximum document size in bytes |
 
@@ -333,8 +321,6 @@ The runner recognizes these standardized error types:
 | `invalid_data` | Generic invalid data |
 | `invalid_object_key` | Non-string key in object |
 | `value_out_of_range` | Value exceeds allowed range |
-| `too_many_chunks` | String exceeds chunk count limit |
-| `empty_chunk_continuation` | Zero-length chunk with continuation bit |
 | `max_depth_exceeded` | Container nesting too deep |
 | `max_string_length_exceeded` | String exceeds length limit |
 | `max_container_size_exceeded` | Container has too many elements |

@@ -22,6 +22,9 @@
 // THE SOFTWARE.
 //
 
+// ABOUTME: Error types for encoding and decoding, all with byte
+// ABOUTME: offset tracking for precise error location reporting.
+
 package bonjson
 
 import (

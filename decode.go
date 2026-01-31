@@ -22,6 +22,11 @@
 // THE SOFTWARE.
 //
 
+// ABOUTME: BONJSON decoding (binary to Go values). Provides Unmarshal(),
+// ABOUTME: UnmarshalWithByteCount(), and the Unmarshaler interface.
+// ABOUTME: Handles security validation (UTF-8, NUL, duplicate keys,
+// ABOUTME: NaN/Infinity) and configurable resource limits.
+
 package bonjson
 
 import (
