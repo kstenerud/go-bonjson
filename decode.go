@@ -1159,6 +1159,7 @@ var (
 	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
 	bigIntPtrType       = reflect.TypeOf((*big.Int)(nil))
 	bigFloatPtrType     = reflect.TypeOf((*big.Float)(nil))
+	stringType          = reflect.TypeOf("")
 )
 
 func (d *decodeState) decodeObject(v reflect.Value, _ reflect.Value) error {
@@ -1284,9 +1285,11 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 func (d *decodeState) convertMapKey(kt reflect.Type, key []byte, keyStart int) (reflect.Value, error) {
 	switch kt.Kind() {
 	case reflect.String:
-		kv := reflect.New(kt).Elem()
-		kv.SetString(string(key))
-		return kv, nil
+		s := string(key)
+		if kt == stringType {
+			return reflect.ValueOf(s), nil
+		}
+		return reflect.ValueOf(s).Convert(kt), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, err := strconv.ParseInt(string(key), 10, 64)
 		kv := reflect.New(kt).Elem()
