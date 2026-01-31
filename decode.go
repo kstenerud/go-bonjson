@@ -445,11 +445,10 @@ func dereferenceAndGetUnmarshaler(v reflect.Value, decodingNull bool) (Unmarshal
 
 	// Decide if we should take the address of v to check for pointer receiver methods.
 	// Only do this for named types (Name() != "") that are addressable.
-	if vKind != reflect.Pointer && v.CanAddr() {
-		// Fast path: for basic types without methods on either value or pointer receiver,
-		// we can skip the Name() check entirely.
+	// Skip types with no package path (predeclared types like int, string, bool)
+	// since they cannot have methods defined on them or their pointer types.
+	if vKind != reflect.Pointer && v.CanAddr() && vType.PkgPath() != "" {
 		if vType.NumMethod() > 0 || reflect.PointerTo(vType).NumMethod() > 0 {
-			// Type has methods, need to check if it's named to take address
 			if vType.Name() != "" {
 				haveAddr = true
 				v = v.Addr()
