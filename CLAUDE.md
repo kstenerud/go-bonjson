@@ -34,7 +34,7 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 | `encode.go` | `Marshal()`, `AppendMarshal()`, `Marshaler` interface |
 | `decode.go` | `Unmarshal()`, `UnmarshalWithByteCount()`, `Unmarshaler` interface |
 | `stream.go` | `Encoder`/`Decoder` for streaming I/O, `RawMessage`, Token API |
-| `wire.go` | Low-level binary encoding: integers, floats, strings, BigNumber, zigzag LEB128 |
+| `wire.go` | Low-level binary encoding: integers, floats, strings, BigNumber (signed length + LE magnitude), zigzag LEB128 |
 | `types.go` | Wire format type codes and security limit constants |
 | `fields.go` | Struct field caching, duplicate key detection infrastructure |
 | `tags.go` | Struct tag parsing ("bonjson" tag, fallback to "json" tag) |
@@ -49,7 +49,7 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 | `decode_test.go` | Decoding, type coercion, struct fields, errors |
 | `encode_test.go` | Encoding, collections, structs, custom types, big numbers |
 | `stream_test.go` | Streaming encoder/decoder, Token API, concatenated documents |
-| `wire_test.go` | Integers, floats, BigNumber encoding, zigzag LEB128 |
+| `wire_test.go` | Integers, floats, BigNumber encoding (signed length + LE magnitude), zigzag LEB128 |
 | `security_test.go` | Duplicate keys, UTF-8, NUL, NaN/Infinity, configurable limits |
 | `security_attack_test.go` | DoS attack scenarios (deep nesting, large payloads, malformed data) |
 | `bench_test.go` | Performance comparisons vs encoding/json |
@@ -127,7 +127,7 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 ```
 0x00-0xC8  Small integers (-100 to +100, type code = value + 100)
 0xC9       Reserved
-0xCA       BigNumber (zigzag LEB128 exponent + zigzag LEB128 significand)
+0xCA       BigNumber (zigzag LEB128 exponent + zigzag LEB128 signed_length + LE magnitude)
 0xCB       Float32
 0xCC       Float64
 0xCD       Null
@@ -160,9 +160,13 @@ Long strings (>15 bytes) use delimiter termination:
 - The data bytes themselves cannot contain 0xFF (strings are UTF-8, and 0xFF is not valid UTF-8)
 - UTF-8 validation happens on the complete string
 
-### BigNumber Format (Phase 2)
-Encoded as 0xCA + zigzag LEB128 exponent (base-10) + zigzag LEB128 significand.
-- Both values use zigzag encoding for signed integers, then unsigned LEB128
+### BigNumber Format
+Encoded as 0xCA + zigzag LEB128 exponent (base-10) + zigzag LEB128 signed_length + LE magnitude bytes.
+- **exponent**: zigzag LEB128 signed integer, base-10 exponent
+- **signed_length**: zigzag LEB128 signed integer encoding both sign and byte count of magnitude.
+  Positive = positive significand, negative = negative significand, zero = significand is zero (no magnitude bytes)
+- **magnitude_bytes**: unsigned little-endian integer, exactly abs(signed_length) bytes, normalized (last byte non-zero)
+- Value = sign(signed_length) × magnitude × 10^exponent
 - No special value encoding; NaN and Infinity are not representable in BigNumber
 
 

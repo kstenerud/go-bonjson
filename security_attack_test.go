@@ -260,8 +260,8 @@ func TestAttack_BigNumberMalformed(t *testing.T) {
 	}{
 		// Exponent LEB128 truncated (high bit set, no continuation)
 		{"exp_truncated", []byte{typeBigNumber, 0x80}},
-		// Exponent valid but significand LEB128 truncated
-		{"sig_truncated", []byte{typeBigNumber, 0x00, 0x80}}, // exp=0, sig starts with 0x80 (needs more bytes)
+		// Exponent valid but signed_length LEB128 truncated
+		{"sig_truncated", []byte{typeBigNumber, 0x00, 0x80}}, // exp=0, signed_length starts with 0x80 (needs more bytes)
 		// No data after type code
 		{"no_data", []byte{typeBigNumber}},
 	}

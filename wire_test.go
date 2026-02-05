@@ -22,7 +22,7 @@
 // THE SOFTWARE.
 
 // ABOUTME: Tests for low-level wire format encoding/decoding.
-// ABOUTME: Phase 2 format: native-size integers, zigzag LEB128 big numbers,
+// ABOUTME: Native-size integers, big numbers (signed length + LE magnitude),
 // ABOUTME: FF-terminated long strings.
 
 package bonjson
@@ -229,8 +229,49 @@ func TestDecodeIntegerInvalidTypeCode(t *testing.T) {
 }
 
 // ============================================================================
-// BigNumber Tests (Phase 2: zigzag LEB128)
+// BigNumber Tests (signed_length + LE magnitude)
 // ============================================================================
+
+func TestBigNumberWireFormat(t *testing.T) {
+	// Verify specific byte sequences match the spec examples
+	tests := []struct {
+		name     string
+		sig      int64
+		exp      int64
+		expected []byte
+	}{
+		{"zero", 0, 0, []byte{0xca, 0x00, 0x00}},
+		{"positive_2", 2, 0, []byte{0xca, 0x00, 0x02, 0x02}},
+		{"negative_1", -1, 0, []byte{0xca, 0x00, 0x01, 0x01}},
+		{"decimal_1_5", 15, -1, []byte{0xca, 0x01, 0x02, 0x0f}},
+		{"value_1000", 10, 2, []byte{0xca, 0x04, 0x02, 0x0a}},
+		{"value_255", 255, 0, []byte{0xca, 0x00, 0x02, 0xff}},
+		{"value_65535", 65535, 0, []byte{0xca, 0x00, 0x04, 0xff, 0xff}},
+		{"value_65537", 65537, 0, []byte{0xca, 0x00, 0x06, 0x01, 0x00, 0x01}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bn := &BigNumber{
+				Significand: big.NewInt(tt.sig),
+				Exponent:    big.NewInt(tt.exp),
+			}
+			dst := make([]byte, 64)
+			n := encodeBigNumber(dst, bn)
+			got := dst[:n]
+			if len(got) != len(tt.expected) {
+				t.Errorf("length mismatch: got %d bytes %x, want %d bytes %x", len(got), got, len(tt.expected), tt.expected)
+				return
+			}
+			for i := range got {
+				if got[i] != tt.expected[i] {
+					t.Errorf("byte %d: got 0x%02x, want 0x%02x (full: %x vs %x)", i, got[i], tt.expected[i], got, tt.expected)
+					return
+				}
+			}
+		})
+	}
+}
 
 func TestBigNumberZero(t *testing.T) {
 	bn := &BigNumber{
@@ -323,8 +364,9 @@ func TestBigNumberTruncatedData(t *testing.T) {
 		data []byte
 	}{
 		{"empty", []byte{}},
-		{"truncated_exponent", []byte{0x80}},                   // LEB128 continuation but no more bytes
-		{"truncated_significand", []byte{0x00, 0x80}},          // exponent done, significand truncated
+		{"truncated_exponent", []byte{0x80}},                          // LEB128 continuation but no more bytes
+		{"truncated_signed_length", []byte{0x00, 0x80}},               // exponent done, signed_length truncated
+		{"truncated_magnitude", []byte{0x00, 0x04, 0xff}},             // signed_length=+2 but only 1 magnitude byte
 	}
 
 	for _, tt := range tests {
@@ -334,6 +376,18 @@ func TestBigNumberTruncatedData(t *testing.T) {
 				t.Error("expected error for truncated data")
 			}
 		})
+	}
+}
+
+func TestBigNumberNonNormalizedMagnitude(t *testing.T) {
+	// signed_length=+2, magnitude=0x01 0x00 (trailing zero = non-normalized)
+	data := []byte{0x00, 0x04, 0x01, 0x00}
+	_, _, _, err := decodeBigNumber(data)
+	if err == nil {
+		t.Error("expected error for non-normalized magnitude")
+	}
+	if _, ok := err.(*InvalidValueError); !ok {
+		t.Errorf("expected InvalidValueError, got %T: %v", err, err)
 	}
 }
 

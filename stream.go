@@ -224,7 +224,7 @@ func (dec *Decoder) readValueBody(tc byte) error {
 		// Long string: read until terminating 0xFF
 		return dec.readLongString()
 	case tc == typeBigNumber:
-		// BigNumber: zigzag LEB128 exponent + zigzag LEB128 significand
+		// BigNumber: zigzag LEB128 exponent + zigzag LEB128 signed_length + LE magnitude
 		return dec.readBigNumber()
 	case tc == typeFloat32:
 		return dec.readBytes(4)
@@ -270,14 +270,49 @@ func (dec *Decoder) readBytes(n int) error {
 	return err
 }
 
-// readBigNumber reads a zigzag LEB128 encoded BigNumber (exponent + significand).
+// readBigNumber reads a BigNumber (exponent + signed_length + magnitude bytes) into the buffer.
 func (dec *Decoder) readBigNumber() error {
 	// Read exponent (LEB128)
 	if err := dec.readLEB128(); err != nil {
 		return err
 	}
-	// Read significand (LEB128)
-	return dec.readLEB128()
+	// Read signed_length (LEB128) and decode its value to know how many magnitude bytes follow
+	slValue, err := dec.readLEB128WithValue()
+	if err != nil {
+		return err
+	}
+	signedLength := zigzagDecode(slValue)
+	// Read magnitude bytes
+	byteCount := signedLength
+	if byteCount < 0 {
+		byteCount = -byteCount
+	}
+	if byteCount > 0 {
+		return dec.readBytes(int(byteCount))
+	}
+	return nil
+}
+
+// readLEB128WithValue reads one LEB128 value from the stream into the buffer
+// and returns its decoded uint64 value.
+func (dec *Decoder) readLEB128WithValue() (uint64, error) {
+	var result uint64
+	var shift uint
+	for {
+		b, err := dec.readByte()
+		if err != nil {
+			return 0, err
+		}
+		dec.buf = append(dec.buf, b)
+		result |= uint64(b&0x7F) << shift
+		if b&0x80 == 0 {
+			return result, nil
+		}
+		shift += 7
+		if shift >= 64 {
+			return 0, &ValueRangeError{Value: "LEB128 overflow", Offset: int64(len(dec.buf))}
+		}
+	}
 }
 
 // readLEB128 reads one LEB128 value from the stream into the buffer.
@@ -569,7 +604,7 @@ func (dec *Decoder) readTokenValue(tc byte) (Token, error) {
 
 	case tc == typeBigNumber:
 		// For Token API, read and skip the BigNumber, return as int64(0) placeholder
-		// Read exponent LEB128
+		// Skip exponent LEB128
 		for {
 			b, err := dec.readByte()
 			if err != nil {
@@ -579,15 +614,32 @@ func (dec *Decoder) readTokenValue(tc byte) (Token, error) {
 				break
 			}
 		}
-		// Read significand LEB128
+		// Read signed_length LEB128 and decode value
+		var slValue uint64
+		var shift uint
 		for {
 			b, err := dec.readByte()
 			if err != nil {
 				return nil, err
 			}
+			slValue |= uint64(b&0x7F) << shift
 			if b&0x80 == 0 {
 				break
 			}
+			shift += 7
+		}
+		// Skip magnitude bytes
+		signedLen := zigzagDecode(slValue)
+		byteCount := signedLen
+		if byteCount < 0 {
+			byteCount = -byteCount
+		}
+		if byteCount > 0 {
+			buf := make([]byte, byteCount)
+			if _, err := io.ReadFull(dec.r, buf); err != nil {
+				return nil, err
+			}
+			dec.bytesRead += int64(byteCount)
 		}
 		return int64(0), nil
 

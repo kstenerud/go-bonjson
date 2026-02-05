@@ -431,7 +431,7 @@ func bigFloatEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		return
 	}
 	// Check for special values (infinity)
-	// Phase 2 BigNumber has no special encoding for infinity
+	// BigNumber has no special encoding for infinity
 	if bf.IsInf() {
 		switch e.nanInfMode {
 		case NaNInfReject:

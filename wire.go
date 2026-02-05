@@ -24,7 +24,7 @@
 
 // ABOUTME: Low-level binary encoding and decoding for the BONJSON wire format.
 // ABOUTME: Handles integers (native sizes), floats, strings (short/long),
-// ABOUTME: big numbers (zigzag LEB128), and booleans.
+// ABOUTME: big numbers (signed length + LE magnitude), and booleans.
 
 package bonjson
 
@@ -403,27 +403,34 @@ func decodeLEB128BigInt(src []byte) (*big.Int, int, error) {
 // ============================================================================
 
 // BigNumber represents a BONJSON big number: significand × 10^exponent.
-// In the Phase 2 format, both values are encoded as zigzag LEB128.
+// Wire format: zigzag LEB128 exponent + zigzag LEB128 signed_length + LE magnitude bytes.
 type BigNumber struct {
 	Significand *big.Int // Signed significand
 	Exponent    *big.Int // Base-10 exponent
 }
 
-// BigNumberSpecial indicates a special BigNumber value (not used in Phase 2).
-// Phase 2 bignum format has no special value encoding for NaN/Infinity.
+// BigNumberSpecial indicates a special BigNumber value (not currently used).
+// The BigNumber format has no special value encoding for NaN/Infinity.
 type BigNumberSpecial int
 
 const (
 	BigNumNormal BigNumberSpecial = iota
 )
 
-// encodeBigNumber encodes a big number as 0xCA + zigzag_leb128(exponent) + zigzag_leb128(significand).
+// encodeBigNumber encodes a big number as:
+//
+//	0xCA + zigzag_leb128(exponent) + zigzag_leb128(signed_length) + magnitude_bytes
+//
+// signed_length encodes both the sign of the significand and the byte count of the
+// magnitude: positive means positive significand, negative means negative, zero means
+// the significand is zero (no magnitude bytes follow). magnitude_bytes is an unsigned
+// little-endian integer.
 // Returns the number of bytes written.
 func encodeBigNumber(dst []byte, bn *BigNumber) int {
 	dst[0] = typeBigNumber
 	offset := 1
 
-	// Encode exponent as zigzag LEB128
+	// Encode exponent as zigzag LEB128 (unchanged)
 	if bn.Exponent == nil || bn.Exponent.IsInt64() {
 		var exp int64
 		if bn.Exponent != nil {
@@ -435,23 +442,36 @@ func encodeBigNumber(dst []byte, bn *BigNumber) int {
 		offset += encodeLEB128BigInt(dst[offset:], zz)
 	}
 
-	// Encode significand as zigzag LEB128
-	if bn.Significand == nil || (bn.Significand.IsInt64() && bn.Significand.Int64() >= math.MinInt64) {
-		var sig int64
-		if bn.Significand != nil && bn.Significand.IsInt64() {
-			sig = bn.Significand.Int64()
-		}
-		offset += encodeLEB128(dst[offset:], zigzagEncode(sig))
-	} else {
-		zz := zigzagEncodeBigInt(bn.Significand)
-		offset += encodeLEB128BigInt(dst[offset:], zz)
+	// Zero significand: signed_length = 0, no magnitude bytes
+	if bn.Significand == nil || bn.Significand.Sign() == 0 {
+		offset += encodeLEB128(dst[offset:], 0)
+		return offset
+	}
+
+	// Get magnitude as little-endian bytes.
+	// big.Int.Bytes() returns big-endian with no leading zeros.
+	beMag := bn.Significand.Bytes() // absolute value, big-endian
+	byteCount := len(beMag)
+
+	// Encode signed_length as zigzag LEB128
+	signedLength := int64(byteCount)
+	if bn.Significand.Sign() < 0 {
+		signedLength = -signedLength
+	}
+	offset += encodeLEB128(dst[offset:], zigzagEncode(signedLength))
+
+	// Write magnitude in little-endian order (reverse of big-endian)
+	for i := byteCount - 1; i >= 0; i-- {
+		dst[offset] = beMag[i]
+		offset++
 	}
 
 	return offset
 }
 
 // decodeBigNumber decodes a big number from src (after the 0xCA type code).
-// Returns the BigNumber, a special value indicator (always BigNumNormal in Phase 2),
+// The wire format is: zigzag_leb128(exponent) + zigzag_leb128(signed_length) + magnitude_bytes.
+// Returns the BigNumber, a special value indicator (always BigNumNormal),
 // bytes consumed, and any error.
 func decodeBigNumber(src []byte) (*BigNumber, BigNumberSpecial, int, error) {
 	offset := 0
@@ -464,13 +484,58 @@ func decodeBigNumber(src []byte) (*BigNumber, BigNumberSpecial, int, error) {
 	offset += n
 	exponent := zigzagDecodeBigInt(expUnsigned)
 
-	// Decode significand (zigzag LEB128)
-	sigUnsigned, n, err := decodeLEB128BigInt(src[offset:])
+	// Decode signed_length (zigzag LEB128, fits in int64)
+	slUnsigned, n, err := decodeLEB128(src[offset:])
 	if err != nil {
 		return nil, BigNumNormal, 0, err
 	}
 	offset += n
-	significand := zigzagDecodeBigInt(sigUnsigned)
+	signedLength := zigzagDecode(slUnsigned)
+
+	// Zero significand
+	if signedLength == 0 {
+		return &BigNumber{
+			Significand: new(big.Int),
+			Exponent:    exponent,
+		}, BigNumNormal, offset, nil
+	}
+
+	// Determine byte count and sign
+	byteCount := int(signedLength)
+	negative := false
+	if signedLength < 0 {
+		byteCount = -byteCount
+		negative = true
+	}
+
+	// Read magnitude bytes (little-endian)
+	if offset+byteCount > len(src) {
+		return nil, BigNumNormal, 0, &TruncatedDataError{
+			Expected: byteCount,
+			Got:      len(src) - offset,
+			Offset:   int64(offset),
+		}
+	}
+
+	// Validate: last byte (most significant) must be non-zero
+	if src[offset+byteCount-1] == 0 {
+		return nil, BigNumNormal, 0, &InvalidValueError{
+			Value:  "non-normalized BigNumber magnitude",
+			Offset: int64(offset + byteCount - 1),
+		}
+	}
+
+	// Convert LE magnitude to big.Int (needs big-endian)
+	beMag := make([]byte, byteCount)
+	for i := 0; i < byteCount; i++ {
+		beMag[i] = src[offset+byteCount-1-i]
+	}
+	offset += byteCount
+
+	significand := new(big.Int).SetBytes(beMag)
+	if negative {
+		significand.Neg(significand)
+	}
 
 	return &BigNumber{
 		Significand: significand,

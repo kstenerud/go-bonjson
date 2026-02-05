@@ -37,7 +37,7 @@ const (
 
 	// 0xC9 is reserved
 
-	// Big number (0xCA) - zigzag LEB128 exponent + zigzag LEB128 significand
+	// Big number (0xCA) - zigzag LEB128 exponent + zigzag LEB128 signed_length + LE magnitude
 	typeBigNumber = 0xCA
 
 	// 32-bit float (0xCB)
