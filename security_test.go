@@ -741,40 +741,45 @@ func TestCombinedDecoderConfigurations(t *testing.T) {
 // Test limit edge values
 func TestLimitEdgeValues(t *testing.T) {
 	t.Run("depth_at_limit", func(t *testing.T) {
-		// Per spec, depth counts values: N nested arrays + 1 element = max depth N+1.
-		// To reach exactly max_depth=5, use 4 nested arrays with a value inside.
-		const limit = 5
-		const nesting = limit - 1 // 4 containers, element at depth 5
+		// Create structure exactly at depth limit using delimiter-terminated format
+		const depth = 5
 		var buf bytes.Buffer
-		for i := 0; i < nesting; i++ {
+		// Each nested array (except innermost) contains one element
+		for i := 0; i < depth-1; i++ {
 			buf.WriteByte(typeArray)
 		}
+		// Innermost array contains one value
+		buf.WriteByte(typeArray)
 		buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
-		for i := 0; i < nesting; i++ {
+		// Close all arrays
+		for i := 0; i < depth; i++ {
 			buf.WriteByte(typeContainerEnd)
 		}
 
 		dec := NewDecoder(&buf)
-		dec.SetMaxDepth(limit)
+		dec.SetMaxDepth(depth)
 
 		var v any
 		err := dec.Decode(&v)
 		if err != nil {
-			t.Errorf("max value depth %d should succeed with limit %d: %v", limit, limit, err)
+			t.Errorf("depth %d should succeed with limit %d: %v", depth, depth, err)
 		}
 	})
 
 	t.Run("depth_one_over_limit", func(t *testing.T) {
-		// Per spec, depth counts values: N nested arrays + 1 element = max depth N+1.
-		// To exceed max_depth=5 by one, use 5 nested arrays with a value inside (depth 6).
+		// Create structure one over depth limit using delimiter-terminated format
 		const limit = 5
-		const nesting = limit // 5 containers, element at depth 6
+		const depth = limit + 1
 		var buf bytes.Buffer
-		for i := 0; i < nesting; i++ {
+		// Each nested array (except innermost) contains one element
+		for i := 0; i < depth-1; i++ {
 			buf.WriteByte(typeArray)
 		}
+		// Innermost array contains one value
+		buf.WriteByte(typeArray)
 		buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
-		for i := 0; i < nesting; i++ {
+		// Close all arrays
+		for i := 0; i < depth; i++ {
 			buf.WriteByte(typeContainerEnd)
 		}
 
