@@ -82,6 +82,9 @@ var supportedCapabilities = map[string]bool{
 	// Supported: Converting out-of-range BigNumbers to string representations
 	"out_of_range_stringify": true,
 
+	// Supported: Encoder rejects NUL characters in strings by default
+	"encode_nul_rejection": true,
+
 	// Supported: Platform capabilities
 	"uint64":        true,
 	"int64":         true,
@@ -566,7 +569,7 @@ func runEncodeErrorTest(t *testing.T, tc testCase) {
 	// Skip tests that require encoder options we don't support
 	if tc.Options != nil {
 		// The encoder only supports nan_infinity option
-		unsupportedEncoderOpts := []string{"max_depth", "max_string_length", "max_container_size", "max_document_size"}
+		unsupportedEncoderOpts := []string{"max_string_length", "max_container_size", "max_document_size"}
 		for _, opt := range unsupportedEncoderOpts {
 			if _, has := tc.Options[opt]; has {
 				t.Skipf("Encoder does not support %s option", opt)
@@ -841,6 +844,10 @@ func applyEncoderOptions(enc *Encoder, opts map[string]interface{}) {
 
 	if v, ok := opts["allow_nul"].(bool); ok && v {
 		enc.AllowNUL()
+	}
+
+	if v, ok := opts["max_depth"].(float64); ok {
+		enc.SetMaxDepth(int(v))
 	}
 
 	// Handle nan_infinity_behavior option (string mode: "allow", "stringify", "reject")

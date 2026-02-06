@@ -132,6 +132,11 @@ type encodeState struct {
 
 	// Allow NUL characters in strings
 	allowNUL bool
+
+	// Maximum container nesting depth (0 = no limit)
+	maxDepth int
+	// Current container nesting depth
+	depth int
 }
 
 const startDetectingCyclesAfter = 1000
@@ -148,6 +153,8 @@ func newEncodeState() *encodeState {
 		e.ptrLevel = 0
 		e.nanInfMode = NaNInfReject
 		e.allowNUL = false
+		e.maxDepth = 0
+		e.depth = 0
 		return e
 	}
 	return &encodeState{ptrSeen: make(map[any]struct{}), nanInfMode: NaNInfReject}
@@ -173,6 +180,19 @@ func (e *encodeState) marshal(v any, opts encOpts) (err error) {
 // error aborts the encoding by panicking with err wrapped in jsonError.
 func (e *encodeState) error(err error) {
 	panic(jsonError{err})
+}
+
+// enterContainer increments depth and panics if max depth is exceeded.
+func (e *encodeState) enterContainer() {
+	e.depth++
+	if e.maxDepth > 0 && e.depth > e.maxDepth {
+		e.error(&MaxDepthError{Depth: e.maxDepth, Offset: int64(e.Len())})
+	}
+}
+
+// exitContainer decrements depth.
+func (e *encodeState) exitContainer() {
+	e.depth--
 }
 
 func isEmptyValue(v reflect.Value) bool {
@@ -734,6 +754,7 @@ type structEncoder struct {
 }
 
 func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
+	e.enterContainer()
 	// Write object type code
 	e.WriteByte(typeObject)
 
@@ -770,6 +791,7 @@ func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 
 	// Write container end marker
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 }
 
 func newStructEncoder(t reflect.Type) encoderFunc {
@@ -824,6 +846,7 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 	}
 
 	// Slow path: use reflect.MapRange for other map types
+	e.enterContainer()
 	// Write object type code
 	e.WriteByte(typeObject)
 
@@ -848,12 +871,14 @@ func (me mapEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 		me.elemEnc(e, kv.v, opts)
 	}
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 	e.ptrLevel--
 }
 
 // Fast path encoders for common map types
 
 func (me mapEncoder) encodeMapStringString(e *encodeState, m map[string]string) {
+	e.enterContainer()
 	e.WriteByte(typeObject)
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -865,9 +890,11 @@ func (me mapEncoder) encodeMapStringString(e *encodeState, m map[string]string) 
 		e.writeString(m[k])
 	}
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 }
 
 func (me mapEncoder) encodeMapStringAny(e *encodeState, m map[string]any, opts encOpts) {
+	e.enterContainer()
 	e.WriteByte(typeObject)
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -879,9 +906,11 @@ func (me mapEncoder) encodeMapStringAny(e *encodeState, m map[string]any, opts e
 		e.reflectValue(reflect.ValueOf(m[k]), opts)
 	}
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 }
 
 func (me mapEncoder) encodeMapStringInt(e *encodeState, m map[string]int) {
+	e.enterContainer()
 	e.WriteByte(typeObject)
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -893,9 +922,11 @@ func (me mapEncoder) encodeMapStringInt(e *encodeState, m map[string]int) {
 		e.writeSmallInt(int64(m[k]))
 	}
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 }
 
 func (me mapEncoder) encodeMapStringInt64(e *encodeState, m map[string]int64) {
+	e.enterContainer()
 	e.WriteByte(typeObject)
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -907,9 +938,11 @@ func (me mapEncoder) encodeMapStringInt64(e *encodeState, m map[string]int64) {
 		e.writeSmallInt(m[k])
 	}
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 }
 
 func (me mapEncoder) encodeMapStringFloat64(e *encodeState, m map[string]float64) {
+	e.enterContainer()
 	e.WriteByte(typeObject)
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -921,9 +954,11 @@ func (me mapEncoder) encodeMapStringFloat64(e *encodeState, m map[string]float64
 		e.writeFloat64(m[k])
 	}
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 }
 
 func (me mapEncoder) encodeMapStringBool(e *encodeState, m map[string]bool) {
+	e.enterContainer()
 	e.WriteByte(typeObject)
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -939,6 +974,7 @@ func (me mapEncoder) encodeMapStringBool(e *encodeState, m map[string]bool) {
 		}
 	}
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 }
 
 func newMapEncoder(t reflect.Type) encoderFunc {
@@ -1008,6 +1044,7 @@ type arrayEncoder struct {
 }
 
 func (ae arrayEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
+	e.enterContainer()
 	n := v.Len()
 	// Write array type code, elements, and container end marker
 	e.WriteByte(typeArray)
@@ -1015,6 +1052,7 @@ func (ae arrayEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 		ae.elemEnc(e, v.Index(i), opts)
 	}
 	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
 }
 
 func newArrayEncoder(t reflect.Type) encoderFunc {

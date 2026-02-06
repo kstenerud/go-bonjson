@@ -422,6 +422,7 @@ type Encoder struct {
 	err        error
 	nanInfMode NaNInfinityMode
 	allowNUL   bool
+	maxDepth   int
 }
 
 // NewEncoder returns a new encoder that writes to w.
@@ -448,6 +449,10 @@ func (enc *Encoder) SetNaNInfinityMode(mode NaNInfinityMode) { enc.nanInfMode = 
 // By default, NUL characters are rejected.
 func (enc *Encoder) AllowNUL() { enc.allowNUL = true }
 
+// SetMaxDepth sets the maximum allowed nesting depth for arrays and objects.
+// The default is 0 (no limit).
+func (enc *Encoder) SetMaxDepth(n int) { enc.maxDepth = n }
+
 // Encode writes the BONJSON encoding of v to the stream.
 func (enc *Encoder) Encode(v any) error {
 	if enc.err != nil {
@@ -459,6 +464,7 @@ func (enc *Encoder) Encode(v any) error {
 
 	e.nanInfMode = enc.nanInfMode
 	e.allowNUL = enc.allowNUL
+	e.maxDepth = enc.maxDepth
 
 	err := e.marshal(v, encOpts{})
 	if err != nil {
