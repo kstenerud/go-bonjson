@@ -129,6 +129,9 @@ type encodeState struct {
 
 	// NaN/Infinity handling mode
 	nanInfMode NaNInfinityMode
+
+	// Allow NUL characters in strings
+	allowNUL bool
 }
 
 const startDetectingCyclesAfter = 1000
@@ -144,6 +147,7 @@ func newEncodeState() *encodeState {
 		}
 		e.ptrLevel = 0
 		e.nanInfMode = NaNInfReject
+		e.allowNUL = false
 		return e
 	}
 	return &encodeState{ptrSeen: make(map[any]struct{}), nanInfMode: NaNInfReject}
@@ -675,8 +679,10 @@ func stringEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		e.error(&InvalidUTF8Error{Offset: 0})
 	}
 	// Check for NUL characters - strings.IndexByte uses SIMD-optimized assembly
-	if i := strings.IndexByte(s, 0); i >= 0 {
-		e.error(&NullInStringError{Offset: int64(i)})
+	if !e.allowNUL {
+		if i := strings.IndexByte(s, 0); i >= 0 {
+			e.error(&NullInStringError{Offset: int64(i)})
+		}
 	}
 	e.writeString(s)
 }

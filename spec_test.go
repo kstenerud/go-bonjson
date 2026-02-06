@@ -465,9 +465,21 @@ func runEncodeTest(t *testing.T, tc testCase) {
 		t.Fatalf("Failed to parse input: %v", err)
 	}
 
-	encoded, err := Marshal(value)
-	if err != nil {
-		t.Fatalf("Marshal failed: %v", err)
+	var encoded []byte
+	if tc.Options != nil {
+		// Use streaming encoder when options are specified
+		var buf bytes.Buffer
+		encoder := NewEncoder(&buf)
+		applyEncoderOptions(encoder, tc.Options)
+		if err := encoder.Encode(value); err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		encoded = buf.Bytes()
+	} else {
+		encoded, err = Marshal(value)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
 	}
 
 	expected, err := parseHexBytes(tc.ExpectedBytes)
@@ -523,17 +535,6 @@ func runRoundtripTest(t *testing.T, tc testCase) {
 		t.Fatalf("Failed to parse input: %v", err)
 	}
 
-	// Skip tests that require encoder options we don't support
-	if tc.Options != nil {
-		// allow_nul is only a decoder option - encoder always rejects NUL
-		if v, ok := tc.Options["allow_nul"].(bool); ok && v {
-			// Check if the input contains NUL
-			if containsNUL(value) {
-				t.Skipf("Encoder does not support allow_nul option")
-			}
-		}
-	}
-
 	// Use streaming encoder/decoder if options are specified
 	var buf bytes.Buffer
 	encoder := NewEncoder(&buf)
@@ -556,27 +557,6 @@ func runRoundtripTest(t *testing.T, tc testCase) {
 	}
 }
 
-// containsNUL checks if a value contains NUL characters in strings
-func containsNUL(v interface{}) bool {
-	switch val := v.(type) {
-	case string:
-		return strings.Contains(val, "\x00")
-	case []interface{}:
-		for _, elem := range val {
-			if containsNUL(elem) {
-				return true
-			}
-		}
-	case map[string]interface{}:
-		for k, elem := range val {
-			if strings.Contains(k, "\x00") || containsNUL(elem) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func runEncodeErrorTest(t *testing.T, tc testCase) {
 	value, err := parseTestValue(tc.Input)
 	if err != nil {
@@ -586,7 +566,7 @@ func runEncodeErrorTest(t *testing.T, tc testCase) {
 	// Skip tests that require encoder options we don't support
 	if tc.Options != nil {
 		// The encoder only supports nan_infinity option
-		unsupportedEncoderOpts := []string{"max_depth", "max_string_length", "max_container_size", "max_document_size", "allow_nul"}
+		unsupportedEncoderOpts := []string{"max_depth", "max_string_length", "max_container_size", "max_document_size"}
 		for _, opt := range unsupportedEncoderOpts {
 			if _, has := tc.Options[opt]; has {
 				t.Skipf("Encoder does not support %s option", opt)
@@ -857,6 +837,10 @@ func parseNumberString(s string) (interface{}, error) {
 func applyEncoderOptions(enc *Encoder, opts map[string]interface{}) {
 	if opts == nil {
 		return
+	}
+
+	if v, ok := opts["allow_nul"].(bool); ok && v {
+		enc.AllowNUL()
 	}
 
 	// Handle nan_infinity_behavior option (string mode: "allow", "stringify", "reject")

@@ -232,7 +232,7 @@ For typical structs (<20 fields), linear search beats hash map lookup. The field
 - `SetNaNInfinityMode(NaNInfAllow)` - allow NaN/Infinity as float values
 - `SetNaNInfinityMode(NaNInfStringify)` - convert NaN/Infinity to strings
 
-Note: Both Encoder and Decoder support `SetNaNInfinityMode()` for consistent handling.
+Note: Both Encoder and Decoder support `SetNaNInfinityMode()` and `AllowNUL()` for consistent handling.
 
 
 ## Common Patterns
@@ -386,7 +386,6 @@ Tests with unrecognized options or error types are skipped with a warning (not s
 ### Encoder Limitations
 
 The encoder does not support all options that the decoder supports:
-- `allow_nul` - Encoder always rejects NUL in strings (spec says "MUST NOT produce")
 - `max_depth`, `max_string_length`, etc. - Only supported on decoder
 
 Tests requiring these encoder options are skipped.

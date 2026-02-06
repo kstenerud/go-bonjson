@@ -421,6 +421,7 @@ type Encoder struct {
 	w          io.Writer
 	err        error
 	nanInfMode NaNInfinityMode
+	allowNUL   bool
 }
 
 // NewEncoder returns a new encoder that writes to w.
@@ -443,6 +444,10 @@ func NewEncoder(w io.Writer) *Encoder {
 // when a developer requests unsafe behavior.
 func (enc *Encoder) SetNaNInfinityMode(mode NaNInfinityMode) { enc.nanInfMode = mode }
 
+// AllowNUL enables NUL characters in encoded strings.
+// By default, NUL characters are rejected.
+func (enc *Encoder) AllowNUL() { enc.allowNUL = true }
+
 // Encode writes the BONJSON encoding of v to the stream.
 func (enc *Encoder) Encode(v any) error {
 	if enc.err != nil {
@@ -453,6 +458,7 @@ func (enc *Encoder) Encode(v any) error {
 	defer encodeStatePool.Put(e)
 
 	e.nanInfMode = enc.nanInfMode
+	e.allowNUL = enc.allowNUL
 
 	err := e.marshal(v, encOpts{})
 	if err != nil {
