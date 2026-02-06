@@ -122,6 +122,20 @@ func (dec *Decoder) SetMaxContainerSize(n int) { dec.d.maxAllowedContainerSize =
 // to maliciously large documents (DOS attack).
 func (dec *Decoder) SetMaxDocumentSize(n int64) { dec.d.maxAllowedDocumentSize = n }
 
+// SetMaxBigNumberMagnitude sets the maximum allowed byte length for big number magnitudes.
+// The default is 256 bytes (~617 decimal digits) per BONJSON spec.
+//
+// Setting to 0 will disable this check, which leaves the system vulnerable
+// to maliciously large big numbers (DOS attack).
+func (dec *Decoder) SetMaxBigNumberMagnitude(n int) { dec.d.maxAllowedBigNumMagnitude = n }
+
+// SetMaxBigNumberExponent sets the maximum allowed absolute value for big number exponents.
+// The default is 100,000 per BONJSON spec.
+//
+// Setting to 0 will disable this check, which leaves the system vulnerable
+// to maliciously large exponents (DOS attack).
+func (dec *Decoder) SetMaxBigNumberExponent(n int) { dec.d.maxAllowedBigNumExponent = n }
+
 // SetInvalidUTF8Mode sets how the decoder handles invalid UTF-8 byte sequences.
 // The default is UTF8Reject, which returns an error on invalid UTF-8.
 //

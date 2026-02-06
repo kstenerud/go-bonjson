@@ -99,6 +99,8 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 - `SetMaxDepth(n)` - default 500
 - `SetMaxContainerSize(n)` - default 1,000,000 elements
 - `SetMaxStringLength(n)` - default 10 MB (10,000,000 bytes)
+- `SetMaxBigNumberMagnitude(n)` - default 256 bytes (~617 decimal digits)
+- `SetMaxBigNumberExponent(n)` - default ±100,000
 - `AllowNUL()` - allow NUL characters in strings
 - `DisallowUnknownFields()` - reject unknown struct fields
 
@@ -308,6 +310,8 @@ go test -v -run TestValidationFunctions
 | `max_string_length` | integer | Maximum string length in bytes |
 | `max_container_size` | integer | Maximum elements per container |
 | `max_document_size` | integer | Maximum document size in bytes |
+| `max_bignumber_magnitude` | integer | Maximum byte length of BigNumber magnitude |
+| `max_bignumber_exponent` | integer | Maximum absolute value of BigNumber exponent |
 
 ### Error Type Mapping
 
@@ -331,6 +335,8 @@ The runner recognizes these standardized error types:
 | `max_document_size_exceeded` | Document exceeds size limit |
 | `nan_not_allowed` | NaN value when not allowed |
 | `infinity_not_allowed` | Infinity value when not allowed |
+| `max_bignumber_magnitude_exceeded` | BigNumber magnitude exceeds byte length limit |
+| `max_bignumber_exponent_exceeded` | BigNumber exponent exceeds absolute value limit |
 
 ### Marker Objects
 

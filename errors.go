@@ -247,3 +247,25 @@ type MaxStringLengthError struct {
 func (e *MaxStringLengthError) Error() string {
 	return fmt.Sprintf("bonjson: string length %d exceeds maximum %d at offset %d", e.Length, e.Max, e.Offset)
 }
+
+// MaxBigNumberMagnitudeError is returned when a big number magnitude exceeds the maximum allowed byte length.
+type MaxBigNumberMagnitudeError struct {
+	Length int
+	Max    int
+	Offset int64
+}
+
+func (e *MaxBigNumberMagnitudeError) Error() string {
+	return fmt.Sprintf("bonjson: big number magnitude %d bytes exceeds maximum %d at offset %d", e.Length, e.Max, e.Offset)
+}
+
+// MaxBigNumberExponentError is returned when a big number exponent exceeds the maximum allowed absolute value.
+type MaxBigNumberExponentError struct {
+	Exponent int64
+	Max      int
+	Offset   int64
+}
+
+func (e *MaxBigNumberExponentError) Error() string {
+	return fmt.Sprintf("bonjson: big number exponent %d exceeds maximum ±%d at offset %d", e.Exponent, e.Max, e.Offset)
+}

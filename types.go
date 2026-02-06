@@ -96,10 +96,12 @@ var nativeSizes = [4]int{1, 2, 4, 8}
 // Security limits (configurable via options)
 // Defaults per BONJSON spec "Resource Limits" table
 const (
-	defaultMaxDocumentSize   = 2_000_000_000 // 2 GB
-	defaultMaxContainerDepth = 500           // Nesting depth
-	defaultMaxContainerSize  = 1_000_000     // Elements per container
-	defaultMaxStringLength   = 10_000_000    // 10 MB per string
+	defaultMaxDocumentSize          = 2_000_000_000 // 2 GB
+	defaultMaxContainerDepth        = 500           // Nesting depth
+	defaultMaxContainerSize         = 1_000_000     // Elements per container
+	defaultMaxStringLength          = 10_000_000    // 10 MB per string
+	defaultMaxBigNumberMagnitude    = 256           // 256 bytes (~617 decimal digits)
+	defaultMaxBigNumberExponent     = 100_000       // Absolute value of exponent
 )
 
 // InvalidUTF8Mode controls how the decoder handles invalid UTF-8 byte sequences.

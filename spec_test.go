@@ -100,10 +100,13 @@ var recognizedOptions = map[string]string{
 	"max_container_size":   "integer",
 	"max_string_length":    "integer",
 	"max_document_size":    "integer",
+	"max_bignumber_magnitude": "integer",
+	"max_bignumber_exponent":  "integer",
 	// String options with enum values
 	"nan_infinity_behavior": "string:reject,allow,stringify",
 	"duplicate_key":         "string:reject,keep_first,keep_last",
 	"invalid_utf8":          "string:reject,replace,delete,ignore,pass_through",
+	"out_of_range":          "string:reject,stringify",
 }
 
 // recognizedErrorTypes lists all known error types per the specification.
@@ -123,8 +126,10 @@ var recognizedErrorTypes = map[string]bool{
 	"max_string_length_exceeded":  true,
 	"max_container_size_exceeded": true,
 	"max_document_size_exceeded":  true,
-	"nan_not_allowed":             true, // NaN value when not allowed
-	"infinity_not_allowed":        true, // Infinity value when not allowed
+	"nan_not_allowed":                  true, // NaN value when not allowed
+	"infinity_not_allowed":             true, // Infinity value when not allowed
+	"max_bignumber_magnitude_exceeded": true,
+	"max_bignumber_exponent_exceeded":  true,
 }
 
 // testNamePattern validates test names: must start with letter, contain only letters/digits/underscores
@@ -638,7 +643,7 @@ func runDecodeErrorTest(t *testing.T, tc testCase) {
 }
 
 func hasDecoderOptions(opts map[string]interface{}) bool {
-	decoderOpts := []string{"allow_nul", "nan_infinity_behavior", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_container_size", "max_document_size"}
+	decoderOpts := []string{"allow_nul", "nan_infinity_behavior", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_container_size", "max_document_size", "max_bignumber_magnitude", "max_bignumber_exponent"}
 	for _, opt := range decoderOpts {
 		if _, ok := opts[opt]; ok {
 			return true
@@ -924,6 +929,16 @@ func applyDecoderOptions(dec *Decoder, opts map[string]interface{}) {
 	if v, ok := opts["max_document_size"]; ok {
 		if size, ok := toInt64(v); ok {
 			dec.SetMaxDocumentSize(size)
+		}
+	}
+	if v, ok := opts["max_bignumber_magnitude"]; ok {
+		if size, ok := toInt(v); ok {
+			dec.SetMaxBigNumberMagnitude(size)
+		}
+	}
+	if v, ok := opts["max_bignumber_exponent"]; ok {
+		if size, ok := toInt(v); ok {
+			dec.SetMaxBigNumberExponent(size)
 		}
 	}
 	if v, ok := opts["allow_trailing_bytes"].(bool); ok && v {

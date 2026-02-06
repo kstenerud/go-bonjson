@@ -144,10 +144,12 @@ type decodeState struct {
 	nanInfMode                NaNInfinityMode
 	invalidUTF8Mode           InvalidUTF8Mode
 	duplicateKeyMode          DuplicateKeyMode
-	maxAllowedStringLength    int64
-	maxAllowedContainerDepth  int
-	maxAllowedContainerSize   int
-	maxAllowedDocumentSize    int64
+	maxAllowedStringLength       int64
+	maxAllowedContainerDepth     int
+	maxAllowedContainerSize      int
+	maxAllowedDocumentSize       int64
+	maxAllowedBigNumMagnitude    int
+	maxAllowedBigNumExponent     int
 
 	// Stack of boolean slices for duplicate key detection in nested structs.
 	// Using field indices is more efficient than map lookups for structs.
@@ -175,6 +177,8 @@ func newDecodeState() *decodeState {
 	d.maxAllowedContainerDepth = defaultMaxContainerDepth
 	d.maxAllowedContainerSize = defaultMaxContainerSize
 	d.maxAllowedDocumentSize = defaultMaxDocumentSize
+	d.maxAllowedBigNumMagnitude = defaultMaxBigNumberMagnitude
+	d.maxAllowedBigNumExponent = defaultMaxBigNumberExponent
 	d.containerDepth = 0
 	d.seenStructFieldsDepth = 0
 	return d
@@ -392,6 +396,9 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 	case tc == typeBigNumber:
 		bn, _, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
 		if err != nil {
+			return err
+		}
+		if err := d.checkBigNumberLimits(bn); err != nil {
 			return err
 		}
 		d.offsetIntoData += n
@@ -645,6 +652,45 @@ func (d *decodeState) storeFloat(val float64, v reflect.Value, ut encoding.TextU
 	default:
 		d.saveError(&UnmarshalTypeError{Value: "number", Type: v.Type(), Offset: int64(d.offsetIntoData)})
 	}
+	return nil
+}
+
+func (d *decodeState) checkBigNumberLimits(bn *BigNumber) error {
+	// Check magnitude byte length limit
+	if d.maxAllowedBigNumMagnitude > 0 && bn.Significand != nil {
+		magLen := len(bn.Significand.Bytes())
+		if magLen > d.maxAllowedBigNumMagnitude {
+			return &MaxBigNumberMagnitudeError{
+				Length: magLen,
+				Max:    d.maxAllowedBigNumMagnitude,
+				Offset: int64(d.offsetIntoData),
+			}
+		}
+	}
+
+	// Check exponent absolute value limit
+	if d.maxAllowedBigNumExponent > 0 && bn.Exponent != nil && bn.Exponent.IsInt64() {
+		exp := bn.Exponent.Int64()
+		if exp < 0 {
+			exp = -exp
+		}
+		if exp > int64(d.maxAllowedBigNumExponent) {
+			return &MaxBigNumberExponentError{
+				Exponent: bn.Exponent.Int64(),
+				Max:      d.maxAllowedBigNumExponent,
+				Offset:   int64(d.offsetIntoData),
+			}
+		}
+	}
+	// For exponents that don't fit in int64, they definitely exceed any int limit
+	if d.maxAllowedBigNumExponent > 0 && bn.Exponent != nil && !bn.Exponent.IsInt64() {
+		return &MaxBigNumberExponentError{
+			Exponent: 0, // Can't represent in int64
+			Max:      d.maxAllowedBigNumExponent,
+			Offset:   int64(d.offsetIntoData),
+		}
+	}
+
 	return nil
 }
 
@@ -1481,8 +1527,11 @@ func (d *decodeState) skipValue(tc byte) error {
 		d.offsetIntoData += 8
 		return nil
 	case tc == typeBigNumber:
-		_, _, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
+		bn, _, n, err := decodeBigNumber(d.data[d.offsetIntoData:])
 		if err != nil {
+			return err
+		}
+		if err := d.checkBigNumberLimits(bn); err != nil {
 			return err
 		}
 		d.offsetIntoData += n
