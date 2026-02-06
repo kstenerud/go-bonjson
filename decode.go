@@ -40,6 +40,8 @@ import (
 	"strconv"
 	"sync"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Unmarshal parses the BONJSON-encoded data and stores the result
@@ -144,6 +146,8 @@ type decodeState struct {
 	nanInfMode                NaNInfinityMode
 	invalidUTF8Mode           InvalidUTF8Mode
 	duplicateKeyMode          DuplicateKeyMode
+	outOfRangeMode            OutOfRangeMode
+	unicodeNormMode           UnicodeNormalizationMode
 	maxAllowedStringLength       int64
 	maxAllowedContainerDepth     int
 	maxAllowedContainerSize      int
@@ -173,6 +177,8 @@ func newDecodeState() *decodeState {
 	d.nanInfMode = NaNInfReject
 	d.invalidUTF8Mode = UTF8Reject
 	d.duplicateKeyMode = DupKeyReject
+	d.outOfRangeMode = OutOfRangeReject
+	d.unicodeNormMode = UnicodeNormNone
 	d.maxAllowedStringLength = defaultMaxStringLength
 	d.maxAllowedContainerDepth = defaultMaxContainerDepth
 	d.maxAllowedContainerSize = defaultMaxContainerSize
@@ -398,8 +404,12 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		if err != nil {
 			return err
 		}
-		if err := d.checkBigNumberLimits(bn); err != nil {
-			return err
+		if limErr := d.checkBigNumberLimits(bn); limErr != nil {
+			if d.outOfRangeMode == OutOfRangeStringify {
+				d.offsetIntoData += n
+				return d.storeString([]byte(bigNumberToString(bn)), pv, ut)
+			}
+			return limErr
 		}
 		d.offsetIntoData += n
 		// For *big.Int and *big.Float, use the original value v to preserve type info
@@ -694,6 +704,25 @@ func (d *decodeState) checkBigNumberLimits(bn *BigNumber) error {
 	return nil
 }
 
+// bigNumberToString formats a BigNumber as "[±]<significand>e<exponent>".
+// When the exponent is 0, the "e<exponent>" suffix is omitted.
+func bigNumberToString(bn *BigNumber) string {
+	sig := bn.Significand
+	exp := bn.Exponent
+
+	if sig == nil || sig.Sign() == 0 {
+		return "0"
+	}
+
+	s := sig.String() // includes "-" prefix for negative
+
+	if exp == nil || exp.Sign() == 0 {
+		return s
+	}
+
+	return s + "e" + exp.String()
+}
+
 func (d *decodeState) storeBigNumber(bn *BigNumber, origV reflect.Value, pv reflect.Value, ut encoding.TextUnmarshaler) error {
 	// Check for *big.Int target first - preserve exact integer value
 	// Use origV since pv may be invalid when TextUnmarshaler is found
@@ -979,6 +1008,9 @@ func (d *decodeState) processString(s []byte) ([]byte, error) {
 
 	// Fast path: valid UTF-8, just check for NUL
 	if utf8.Valid(s) {
+		if d.unicodeNormMode == UnicodeNormNFC {
+			s = norm.NFC.Bytes(s)
+		}
 		if !d.allowNUL {
 			if zeroIdx := bytes.IndexByte(s, 0); zeroIdx >= 0 {
 				return nil, &NullInStringError{Offset: int64(baseOff + zeroIdx)}
@@ -1006,10 +1038,24 @@ func (d *decodeState) processString(s []byte) ([]byte, error) {
 		return s, nil
 
 	case UTF8Replace:
-		return d.replaceInvalidUTF8(s, baseOff)
+		result, err := d.replaceInvalidUTF8(s, baseOff)
+		if err != nil {
+			return nil, err
+		}
+		if d.unicodeNormMode == UnicodeNormNFC {
+			result = norm.NFC.Bytes(result)
+		}
+		return result, nil
 
 	case UTF8Delete:
-		return d.deleteInvalidUTF8(s, baseOff)
+		result, err := d.deleteInvalidUTF8(s, baseOff)
+		if err != nil {
+			return nil, err
+		}
+		if d.unicodeNormMode == UnicodeNormNFC {
+			result = norm.NFC.Bytes(result)
+		}
+		return result, nil
 
 	default:
 		// Unknown mode, fall back to reject

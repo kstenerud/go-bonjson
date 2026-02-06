@@ -79,6 +79,9 @@ var supportedCapabilities = map[string]bool{
 	// Supported: Converting NaN/Infinity to string representations during decoding
 	"nan_infinity_stringify": true,
 
+	// Supported: Converting out-of-range BigNumbers to string representations
+	"out_of_range_stringify": true,
+
 	// Supported: Platform capabilities
 	"uint64":        true,
 	"int64":         true,
@@ -106,7 +109,8 @@ var recognizedOptions = map[string]string{
 	"nan_infinity_behavior": "string:reject,allow,stringify",
 	"duplicate_key":         "string:reject,keep_first,keep_last",
 	"invalid_utf8":          "string:reject,replace,delete,ignore,pass_through",
-	"out_of_range":          "string:reject,stringify",
+	"out_of_range":              "string:error,stringify",
+	"unicode_normalization":     "string:none,nfc",
 }
 
 // recognizedErrorTypes lists all known error types per the specification.
@@ -643,7 +647,7 @@ func runDecodeErrorTest(t *testing.T, tc testCase) {
 }
 
 func hasDecoderOptions(opts map[string]interface{}) bool {
-	decoderOpts := []string{"allow_nul", "nan_infinity_behavior", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_container_size", "max_document_size", "max_bignumber_magnitude", "max_bignumber_exponent"}
+	decoderOpts := []string{"allow_nul", "nan_infinity_behavior", "duplicate_key", "invalid_utf8", "max_depth", "max_string_length", "max_container_size", "max_document_size", "max_bignumber_magnitude", "max_bignumber_exponent", "out_of_range", "unicode_normalization"}
 	for _, opt := range decoderOpts {
 		if _, ok := opts[opt]; ok {
 			return true
@@ -943,6 +947,24 @@ func applyDecoderOptions(dec *Decoder, opts map[string]interface{}) {
 	}
 	if v, ok := opts["allow_trailing_bytes"].(bool); ok && v {
 		// Note: Decoder doesn't have this option, handled differently
+	}
+	// Handle out_of_range option (string mode: "error", "stringify")
+	if v, ok := opts["out_of_range"].(string); ok {
+		switch v {
+		case "stringify":
+			dec.SetOutOfRangeMode(OutOfRangeStringify)
+		case "error":
+			dec.SetOutOfRangeMode(OutOfRangeReject)
+		}
+	}
+	// Handle unicode_normalization option (string mode: "none", "nfc")
+	if v, ok := opts["unicode_normalization"].(string); ok {
+		switch v {
+		case "nfc":
+			dec.SetUnicodeNormalizationMode(UnicodeNormNFC)
+		case "none":
+			dec.SetUnicodeNormalizationMode(UnicodeNormNone)
+		}
 	}
 }
 

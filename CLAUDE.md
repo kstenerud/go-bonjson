@@ -103,6 +103,8 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 - `SetMaxBigNumberExponent(n)` - default ±100,000
 - `AllowNUL()` - allow NUL characters in strings
 - `DisallowUnknownFields()` - reject unknown struct fields
+- `SetOutOfRangeMode(mode)` - stringify out-of-range BigNumbers instead of error
+- `SetUnicodeNormalizationMode(mode)` - apply NFC normalization to decoded strings
 
 ### Security Behavior Options (on Decoder)
 
@@ -121,6 +123,14 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 - `NaNInfReject` (default) - return error on NaN/Infinity (JSON compatible)
 - `NaNInfAllow` - allow NaN/Infinity as float values (breaks JSON compatibility)
 - `NaNInfStringify` - convert to string representations ("NaN", "Infinity", "-Infinity")
+
+**Out-of-Range BigNumber Handling** (`SetOutOfRangeMode`):
+- `OutOfRangeReject` (default) - return error when BigNumber exceeds limits
+- `OutOfRangeStringify` - convert to string (e.g. "1e6", "-15e5")
+
+**Unicode Normalization** (`SetUnicodeNormalizationMode`):
+- `UnicodeNormNone` (default) - no normalization
+- `UnicodeNormNFC` - apply NFC normalization to all decoded strings and object keys
 
 
 ## Wire Format
@@ -312,6 +322,8 @@ go test -v -run TestValidationFunctions
 | `max_document_size` | integer | Maximum document size in bytes |
 | `max_bignumber_magnitude` | integer | Maximum byte length of BigNumber magnitude |
 | `max_bignumber_exponent` | integer | Maximum absolute value of BigNumber exponent |
+| `out_of_range` | string | Out-of-range BigNumber handling: `error`, `stringify` |
+| `unicode_normalization` | string | Unicode normalization: `none`, `nfc` |
 
 ### Error Type Mapping
 
@@ -394,6 +406,7 @@ Some tests require capabilities not all implementations support. Tests declare r
 | `bignumber_exponent_gt_127` | Yes | BigNumber exponents > 127 (uses 2-3 byte exponent encoding) |
 | `bignumber_exponent_lt_neg128` | Yes | BigNumber exponents < -128 (uses 2-3 byte exponent encoding) |
 | `nan_infinity_stringify` | Yes | Converting NaN/Infinity to string representations (`NaNInfStringify` mode) |
+| `out_of_range_stringify` | Yes | Converting out-of-range BigNumbers to string representations (`OutOfRangeStringify` mode) |
 
 
 ## Potential Improvements

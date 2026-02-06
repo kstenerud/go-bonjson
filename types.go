@@ -254,3 +254,34 @@ const (
 	// type safety in downstream JSON-compatible systems.
 	NaNInfStringify
 )
+
+// OutOfRangeMode controls how the decoder handles BigNumber values that exceed
+// configured limits (max_bignumber_exponent, max_bignumber_magnitude).
+type OutOfRangeMode int
+
+const (
+	// OutOfRangeReject returns an error when a BigNumber exceeds limits.
+	// This is the default behavior.
+	OutOfRangeReject OutOfRangeMode = iota
+
+	// OutOfRangeStringify converts out-of-range BigNumbers to their string
+	// representation instead of returning an error. The format is
+	// "[±]<significand>e<exponent>" (e.g. "1e6", "-15e5").
+	// When the exponent is 0, the "e<exponent>" suffix is omitted.
+	OutOfRangeStringify
+)
+
+// UnicodeNormalizationMode controls how the decoder normalizes Unicode strings.
+type UnicodeNormalizationMode int
+
+const (
+	// UnicodeNormNone performs no Unicode normalization.
+	// This is the default behavior.
+	UnicodeNormNone UnicodeNormalizationMode = iota
+
+	// UnicodeNormNFC applies Unicode Normalization Form C (NFC) to all decoded
+	// strings. This composes decomposed characters (e.g. "e" + combining acute
+	// becomes "é"). NFC normalization applies to both string values and object
+	// keys, which means previously distinct keys may become duplicates.
+	UnicodeNormNFC
+)

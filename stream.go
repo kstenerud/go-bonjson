@@ -186,6 +186,25 @@ func (dec *Decoder) SetDuplicateKeyMode(mode DuplicateKeyMode) { dec.d.duplicate
 // when a developer requests unsafe behavior.
 func (dec *Decoder) SetNaNInfinityMode(mode NaNInfinityMode) { dec.d.nanInfMode = mode }
 
+// SetOutOfRangeMode sets how the decoder handles BigNumber values that exceed
+// configured limits (max_bignumber_exponent, max_bignumber_magnitude).
+// The default is OutOfRangeReject, which returns an error.
+//
+// Available modes:
+//   - OutOfRangeReject: Return error on out-of-range BigNumber (default)
+//   - OutOfRangeStringify: Convert to string representation (e.g. "1e6")
+func (dec *Decoder) SetOutOfRangeMode(mode OutOfRangeMode) { dec.d.outOfRangeMode = mode }
+
+// SetUnicodeNormalizationMode sets how the decoder normalizes Unicode strings.
+// The default is UnicodeNormNone, which performs no normalization.
+//
+// Available modes:
+//   - UnicodeNormNone: No normalization (default)
+//   - UnicodeNormNFC: Apply NFC normalization to all decoded strings
+func (dec *Decoder) SetUnicodeNormalizationMode(mode UnicodeNormalizationMode) {
+	dec.d.unicodeNormMode = mode
+}
+
 // Decode reads the next BONJSON-encoded value from its
 // input and stores it in the value pointed to by v.
 func (dec *Decoder) Decode(v any) error {
