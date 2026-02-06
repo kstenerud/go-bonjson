@@ -229,6 +229,18 @@ func (d *decodeState) exitContainer() {
 	d.containerDepth--
 }
 
+// checkElementDepth returns an error if reading an element inside the current
+// container would exceed the maximum allowed depth. The spec defines depth as:
+// root value = depth 1, each value inside a container = container's depth + 1.
+// Since containerDepth tracks the number of containers entered, an element's
+// depth is containerDepth + 1, so we reject when containerDepth >= max.
+func (d *decodeState) checkElementDepth() error {
+	if d.maxAllowedContainerDepth > 0 && d.containerDepth >= d.maxAllowedContainerDepth {
+		return &MaxDepthError{Depth: d.maxAllowedContainerDepth, Offset: int64(d.offsetIntoData)}
+	}
+	return nil
+}
+
 func (d *decodeState) init(data []byte) error {
 	// Check document size limit
 	if d.maxAllowedDocumentSize > 0 && int64(len(data)) > d.maxAllowedDocumentSize {
@@ -1208,6 +1220,11 @@ func (d *decodeState) decodeArray(v reflect.Value, _ reflect.Value) error {
 			break
 		}
 
+		// Check element depth limit
+		if err := d.checkElementDepth(); err != nil {
+			return err
+		}
+
 		// Check container size limit
 		if d.maxAllowedContainerSize > 0 && totalElements >= d.maxAllowedContainerSize {
 			return &MaxContainerSizeError{Size: totalElements + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
@@ -1324,6 +1341,11 @@ func (d *decodeState) decodeObjectToMap(v reflect.Value) error {
 			break
 		}
 
+		// Check element depth limit
+		if err := d.checkElementDepth(); err != nil {
+			return err
+		}
+
 		// Check container size limit
 		if d.maxAllowedContainerSize > 0 && totalPairs >= d.maxAllowedContainerSize {
 			return &MaxContainerSizeError{Size: totalPairs + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
@@ -1429,6 +1451,11 @@ func (d *decodeState) decodeObjectToStruct(v reflect.Value) error {
 		if b == typeContainerEnd {
 			d.offsetIntoData++ // consume the end marker
 			break
+		}
+
+		// Check element depth limit
+		if err := d.checkElementDepth(); err != nil {
+			return err
 		}
 
 		// Check container size limit
@@ -1647,6 +1674,12 @@ func (d *decodeState) arrayInterface() []any {
 			break
 		}
 
+		// Check element depth limit
+		if err := d.checkElementDepth(); err != nil {
+			d.saveError(err)
+			return v
+		}
+
 		// Check container size limit
 		if d.maxAllowedContainerSize > 0 && totalElements >= d.maxAllowedContainerSize {
 			d.saveError(&MaxContainerSizeError{Size: totalElements + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
@@ -1681,6 +1714,12 @@ func (d *decodeState) objectInterface() map[string]any {
 		if b == typeContainerEnd {
 			d.offsetIntoData++ // consume the end marker
 			break
+		}
+
+		// Check element depth limit
+		if err := d.checkElementDepth(); err != nil {
+			d.saveError(err)
+			return m
 		}
 
 		// Check container size limit

@@ -386,10 +386,11 @@ func TestAttack_StringNULByte(t *testing.T) {
 // ============================================================================
 
 func TestAttack_DeepNestingArrays(t *testing.T) {
-	// Create arrays nested to various depths
-	// Default max depth per BONJSON spec is 500
+	// Create arrays nested to various depths with a value inside the innermost.
+	// Per spec, depth counts values: N nested arrays + 1 element = max depth N+1.
+	// Default max depth per BONJSON spec is 500.
 	// Delimiter-terminated: typeArray + children + typeContainerEnd
-	depths := []int{100, 499, 500, 501, 1000}
+	depths := []int{100, 498, 499, 500, 501, 1000}
 
 	for _, depth := range depths {
 		t.Run(fmt.Sprintf("depth_%04d", depth), func(t *testing.T) {
@@ -405,15 +406,16 @@ func TestAttack_DeepNestingArrays(t *testing.T) {
 			var v any
 			err := Unmarshal(buf.Bytes(), &v)
 
-			if depth > 500 {
-				// Should fail for depths > default max (500 per BONJSON spec)
+			// Max value depth is depth+1 (N containers + element inside innermost)
+			if depth+1 > 500 {
+				// Should fail when max value depth exceeds default max (500)
 				if err == nil {
-					t.Errorf("expected error for depth %d", depth)
+					t.Errorf("expected error for nesting %d (max value depth %d)", depth, depth+1)
 				}
 			} else {
-				// Should succeed for depths <= 500
+				// Should succeed when max value depth <= 500
 				if err != nil {
-					t.Errorf("unexpected error for depth %d: %v", depth, err)
+					t.Errorf("unexpected error for nesting %d (max value depth %d): %v", depth, depth+1, err)
 				}
 			}
 		})
