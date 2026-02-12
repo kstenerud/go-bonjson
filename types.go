@@ -23,59 +23,76 @@
 //
 
 // ABOUTME: Wire format type codes and security limit constants for BONJSON.
-// ABOUTME: Phase 2 format: delimiter-terminated containers, FF-terminated
-// ABOUTME: long strings, native-size integers, zigzag LEB128 big numbers.
+// ABOUTME: Delimiter-terminated containers, FF-terminated long strings,
+// ABOUTME: native-size integers, zigzag LEB128 big numbers, typed arrays,
+// ABOUTME: and records.
 
 package bonjson
 
-// Type codes for BONJSON encoding (Phase 2 format)
+// Type codes for BONJSON encoding
 const (
-	// Small integers -100 to 100 (type codes 0x00-0xC8)
-	// Value = type_code - 100
-	typeSmallIntMin = 0x00 // -100
-	typeSmallIntMax = 0xC8 // 100
+	// Small integers 0 to 100 (type codes 0x00-0x64)
+	// Value = type_code
+	typeSmallIntMax = 0x64 // 100
 
-	// 0xC9 is reserved
+	// Short strings (0x65-0xA7) - n bytes where n = typecode - 0x65
+	typeShortStringBase = 0x65
+	typeShortStringMax  = 0xA7
 
-	// Big number (0xCA) - zigzag LEB128 exponent + zigzag LEB128 signed_length + LE magnitude
-	typeBigNumber = 0xCA
-
-	// 32-bit float (0xCB)
-	typeFloat32 = 0xCB
-
-	// 64-bit float (0xCC)
-	typeFloat64 = 0xCC
-
-	// Null (0xCD)
-	typeNull = 0xCD
-
-	// Boolean false (0xCE)
-	typeFalse = 0xCE
-
-	// Boolean true (0xCF)
-	typeTrue = 0xCF
-
-	// Short strings (0xD0-0xDF) - n bytes where n = (typecode & 0x0f)
-	typeShortStringBase = 0xD0
-
-	// Unsigned integers (0xE0-0xE3) - native sizes 1, 2, 4, 8 bytes
+	// Unsigned integers (0xA8-0xAB) - native sizes 1, 2, 4, 8 bytes
 	// Size index = typecode & 0x03, byte count = 1 << sizeIndex
-	typeUintBase = 0xE0
+	typeUintBase = 0xA8
 
-	// Signed integers (0xE4-0xE7) - native sizes 1, 2, 4, 8 bytes
+	// Signed integers (0xAC-0xAF) - native sizes 1, 2, 4, 8 bytes
 	// Size index = typecode & 0x03, byte count = 1 << sizeIndex
-	typeSintBase = 0xE4
+	typeSintBase = 0xAC
 
-	// 0xE8-0xFB are reserved
+	// 32-bit float (0xB0)
+	typeFloat32 = 0xB0
 
-	// Array (0xFC) - followed by values, terminated by 0xFE
-	typeArray = 0xFC
+	// 64-bit float (0xB1)
+	typeFloat64 = 0xB1
 
-	// Object (0xFD) - followed by key-value pairs, terminated by 0xFE
-	typeObject = 0xFD
+	// Big number (0xB2) - zigzag LEB128 exponent + zigzag LEB128 signed_length + LE magnitude
+	typeBigNumber = 0xB2
 
-	// Container end marker (0xFE)
-	typeContainerEnd = 0xFE
+	// Null (0xB3)
+	typeNull = 0xB3
+
+	// Boolean false (0xB4)
+	typeFalse = 0xB4
+
+	// Boolean true (0xB5)
+	typeTrue = 0xB5
+
+	// Container end marker (0xB6)
+	typeContainerEnd = 0xB6
+
+	// Array (0xB7) - followed by values, terminated by 0xB6
+	typeArray = 0xB7
+
+	// Object (0xB8) - followed by key-value pairs, terminated by 0xB6
+	typeObject = 0xB8
+
+	// Record definition (0xB9) - followed by string keys, terminated by 0xB6
+	typeRecordDef = 0xB9
+
+	// Record instance (0xBA) - LEB128 def_index + values, terminated by 0xB6
+	typeRecordInst = 0xBA
+
+	// 0xBB-0xF4 are reserved
+
+	// Typed arrays (0xF5-0xFE) - LEB128 element count + packed element data
+	typeTypedFloat64Array = 0xF5
+	typeTypedFloat32Array = 0xF6
+	typeTypedInt64Array   = 0xF7
+	typeTypedInt32Array   = 0xF8
+	typeTypedInt16Array   = 0xF9
+	typeTypedInt8Array    = 0xFA
+	typeTypedUint64Array  = 0xFB
+	typeTypedUint32Array  = 0xFC
+	typeTypedUint16Array  = 0xFD
+	typeTypedUint8Array   = 0xFE
 
 	// Long string (0xFF) - 0xFF + data bytes + 0xFF
 	typeLongString = 0xFF
@@ -83,12 +100,26 @@ const (
 
 // Maximum values for small integers encoded in the type code itself
 const (
-	smallIntMin = -100
+	smallIntMin = 0
 	smallIntMax = 100
 )
 
 // Maximum length for short strings (encoded in type code)
-const maxShortStringLen = 15
+const maxShortStringLen = 66
+
+// typedArrayElementSizes maps typed array type codes to element byte sizes
+var typedArrayElementSizes = [256]int{
+	typeTypedFloat64Array: 8,
+	typeTypedFloat32Array: 4,
+	typeTypedInt64Array:   8,
+	typeTypedInt32Array:   4,
+	typeTypedInt16Array:   2,
+	typeTypedInt8Array:    1,
+	typeTypedUint64Array:  8,
+	typeTypedUint32Array:  4,
+	typeTypedUint16Array:  2,
+	typeTypedUint8Array:   1,
+}
 
 // nativeSizes maps size index (0-3) to byte count (1, 2, 4, 8)
 var nativeSizes = [4]int{1, 2, 4, 8}

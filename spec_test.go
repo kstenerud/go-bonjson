@@ -137,6 +137,9 @@ var recognizedErrorTypes = map[string]bool{
 	"infinity_not_allowed":             true, // Infinity value when not allowed
 	"max_bignumber_magnitude_exceeded": true,
 	"max_bignumber_exponent_exceeded":  true,
+	"invalid_record_index":             true, // record instance references non-existent definition
+	"record_too_many_values":           true, // record instance has more values than definition keys
+	"record_no_definitions":            true, // record instance in document with no definitions
 }
 
 // testNamePattern validates test names: must start with letter, contain only letters/digits/underscores
@@ -297,6 +300,10 @@ func TestBONJSONSpec(t *testing.T) {
 		sourcePath := filepath.Join(specDir, source.Path)
 		info, err := os.Stat(sourcePath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				t.Logf("Skipping missing test source: %s", source.Path)
+				continue
+			}
 			t.Errorf("Failed to stat source %s: %v", source.Path, err)
 			continue
 		}

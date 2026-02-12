@@ -712,7 +712,7 @@ func (e *encodeState) writeString(s string) {
 	n := len(s)
 	if n <= maxShortStringLen {
 		// Short string: 1 byte type code + data
-		e.WriteByte(typeShortStringBase | byte(n))
+		e.WriteByte(typeShortStringBase + byte(n))
 		e.WriteString(s)
 	} else {
 		// Long string: 0xFF + data + 0xFF

@@ -951,7 +951,7 @@ func TestValid(t *testing.T) {
 	}
 
 	// Invalid data
-	if Valid([]byte{0xc9}) { // Reserved type code (0xc9-0xcf are reserved)
+	if Valid([]byte{0xbb}) { // Reserved type code (0xbb-0xf4 are reserved)
 		t.Error("Valid returned true for invalid type code")
 	}
 

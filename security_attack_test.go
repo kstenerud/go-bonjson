@@ -141,8 +141,8 @@ func TestAttack_InvalidReservedTypeCodes(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"reserved_0xc9", []byte{0xc9}},
-		{"reserved_0xfa", []byte{0xfa}},
+		{"reserved_0xbb", []byte{0xbb}},
+		{"reserved_0xf0", []byte{0xf0}},
 	}
 
 	for _, tt := range tests {
@@ -450,8 +450,8 @@ func TestAttack_WideContainer(t *testing.T) {
 	count := 10000
 	buf.WriteByte(typeArray)
 	for i := 0; i < count; i++ {
-		// Small int encoding: value + 100 (values 0-100 map to type codes 100-200)
-		buf.WriteByte(byte((i % 101) + 100))
+		// Small int encoding: type code = value (values 0-100 map to type codes 0x00-0x64)
+		buf.WriteByte(byte(i % 101))
 	}
 	buf.WriteByte(typeContainerEnd)
 
@@ -507,7 +507,7 @@ func TestAttack_TrailingGarbage(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"int_with_trailing", []byte{0x65, 0x02}}, // small int 1 (0x64+1) + trailing
+		{"int_with_trailing", []byte{0x01, 0x02}}, // small int 1 (type code = value) + trailing
 		{"null_with_trailing", []byte{typeNull, 0x00}},
 		{"bool_with_trailing", []byte{typeTrue, 0xff}},
 		{"string_with_trailing", []byte{typeShortStringBase + 1, 'a', 0x00}},
@@ -576,7 +576,7 @@ func TestAttack_TypeConfusion(t *testing.T) {
 		data   []byte
 		target any
 	}{
-		{"int_into_string", []byte{0x6a}, new(string)}, // small int 6 (0x64+6)
+		{"int_into_string", []byte{0x06}, new(string)}, // small int 6 (type code = value)
 		{"string_into_int", []byte{typeShortStringBase + 3, 'f', 'o', 'o'}, new(int)},
 		// Empty array
 		{"array_into_string", []byte{typeArray, typeContainerEnd}, new(string)},
@@ -651,10 +651,10 @@ func TestAttack_ValidWithMalicious(t *testing.T) {
 	}{
 		{"empty", []byte{}, false},
 		{"valid_null", []byte{typeNull}, true},
-		{"valid_int", []byte{0x65}, true}, // small int 1 (0x64+1)
+		{"valid_int", []byte{0x01}, true}, // small int 1 (type code = value)
 		{"valid_string", []byte{typeShortStringBase + 2, 'h', 'i'}, true},
 		{"truncated_float", []byte{typeFloat64, 0x00}, false},
-		{"reserved_type", []byte{0xc9}, false}, // reserved range 0xc9-0xcf
+		{"reserved_type", []byte{0xbb}, false}, // reserved range 0xbb-0xf4
 		// Truncated array: typeArray with no end marker
 		{"truncated_container", []byte{typeArray}, false},
 		{"trailing_data", []byte{typeNull, 0x00}, false},

@@ -52,15 +52,15 @@ func TestDecodeBasicTypes(t *testing.T) {
 		// Null
 		{"null", []byte{typeNull}, new(any), nil},
 
-		// Small integers: type_code = value + 100
-		// 0 = 0x64, 1 = 0x65, 100 = 0xc8, -1 = 0x63, -100 = 0x00
-		{"int_0", []byte{0x64}, new(int), 0},
-		{"int_1", []byte{0x65}, new(int), 1},
-		{"int_100", []byte{0xc8}, new(int), 100},
+		// Small integers: type_code = value (0 to 100)
+		// 0 = 0x00, 1 = 0x01, 100 = 0x64. Negatives use signed int encoding.
+		{"int_0", []byte{0x00}, new(int), 0},
+		{"int_1", []byte{0x01}, new(int), 1},
+		{"int_100", []byte{0x64}, new(int), 100},
 
-		// Small negative integers (-1 to -100)
-		{"int_-1", []byte{0x63}, new(int), -1},
-		{"int_-100", []byte{0x00}, new(int), -100},
+		// Negative integers use signed int encoding (typeSintBase + data)
+		{"int_-1", []byte{typeSintBase, 0xff}, new(int), -1},
+		{"int_-100", []byte{typeSintBase, 0x9c}, new(int), -100},
 
 		// Short strings
 		{"empty_string", []byte{typeShortStringBase}, new(string), ""},
@@ -186,8 +186,8 @@ func TestUnmarshalWithByteCount(t *testing.T) {
 		wantConsumed int
 	}{
 		// Values without trailing data - should succeed
-		// Small int 10 = 0x64 + 10 = 0x6e
-		{"int_no_trailing", []byte{0x6e}, new(int), 10, 1},
+		// Small int 10 = 0x0a (type code = value)
+		{"int_no_trailing", []byte{0x0a}, new(int), 10, 1},
 		{"null_no_trailing", []byte{typeNull}, new(any), nil, 1},
 		{"true_no_trailing", []byte{typeTrue}, new(bool), true, 1},
 		{"string_no_trailing", []byte{typeShortStringBase + 2, 'h', 'i'}, new(string), "hi", 3},
@@ -212,8 +212,8 @@ func TestUnmarshalWithByteCount(t *testing.T) {
 
 func TestUnmarshalWithByteCountReturnsConsumedOnTrailingData(t *testing.T) {
 	// UnmarshalWithByteCount should return error on trailing data, but also return consumed count
-	// Small int 5 = 0x64 + 5 = 0x69
-	data := []byte{0x69, 0x99, 0x88, 0x77} // int 5 followed by garbage
+	// Small int 5 = 0x05 (type code = value)
+	data := []byte{0x05, 0x99, 0x88, 0x77} // int 5 followed by garbage
 	var v int
 	consumed, err := UnmarshalWithByteCount(data, &v)
 	if err == nil {
@@ -260,8 +260,8 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 	// Test all error conditions that can occur during partial decoding
 
 	t.Run("InvalidTypeCodeError", func(t *testing.T) {
-		// Reserved type codes 0xc9-0xcf and 0xfa-0xff are invalid
-		data := []byte{0xc9}
+		// Reserved type codes 0xbb-0xf4 are invalid
+		data := []byte{0xbb}
 		var v any
 		n, err := UnmarshalWithByteCount(data, &v)
 		if err == nil {
@@ -386,7 +386,7 @@ func TestUnmarshalWithByteCountErrorConditions(t *testing.T) {
 		// New format: typeObject + key + value + typeContainerEnd
 		data := []byte{
 			typeObject,
-			0x69, 0x65, // int key (5 in new encoding: 5+100=105=0x69), then int value 1 (1+100=0x65)
+			0x05, 0x01, // int key (5, type code = value), then int value 1
 			typeContainerEnd,
 		}
 		var v map[string]int
@@ -978,14 +978,14 @@ func TestDecodeTruncatedData(t *testing.T) {
 // ============================================================================
 
 func TestDecodeInvalidTypeCode(t *testing.T) {
-	// Reserved type codes: 0xC9, 0xFA, 0xFB
+	// Reserved type codes: 0xBB-0xF4
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{"reserved_0xc9", []byte{0xc9}},
-		{"reserved_0xfa", []byte{0xfa}},
-		{"reserved_0xfb", []byte{0xfb}},
+		{"reserved_0xbb", []byte{0xbb}},
+		{"reserved_0xcc", []byte{0xcc}},
+		{"reserved_0xf0", []byte{0xf0}},
 	}
 
 	for _, tt := range tests {
@@ -2861,9 +2861,9 @@ func TestErrorOffsets(t *testing.T) {
 		data := []byte{
 			typeObject,
 			typeShortStringBase + 1, 'a', // key "a"
-			0x65, // value 1 (1+100=0x65)
+			0x01, // value 1 (type code = value)
 			typeShortStringBase + 1, 'a', // duplicate key "a"
-			0x66, // value 2 (2+100=0x66)
+			0x02, // value 2 (type code = value)
 			typeContainerEnd,
 		}
 		var v any
@@ -2906,8 +2906,8 @@ func TestErrorOffsets(t *testing.T) {
 
 	t.Run("invalid_type_code_offset", func(t *testing.T) {
 		// Invalid type code at offset 0
-		// New reserved range: 0xc9-0xcf
-		data := []byte{0xc9} // reserved type code
+		// New reserved range: 0xbb-0xf4
+		data := []byte{0xbb} // reserved type code
 		var v any
 		err := Unmarshal(data, &v)
 		if err == nil {
@@ -2917,8 +2917,8 @@ func TestErrorOffsets(t *testing.T) {
 		if !errors.As(err, &itce) {
 			t.Fatalf("expected InvalidTypeCodeError, got %T", err)
 		}
-		if itce.TypeCode != 0xc9 {
-			t.Errorf("expected TypeCode = 0xc9, got 0x%02x", itce.TypeCode)
+		if itce.TypeCode != 0xbb {
+			t.Errorf("expected TypeCode = 0xbb, got 0x%02x", itce.TypeCode)
 		}
 		if itce.Offset != 0 {
 			t.Errorf("expected Offset = 0, got %d", itce.Offset)
@@ -2932,7 +2932,7 @@ func TestErrorOffsets(t *testing.T) {
 			typeArray,        // outer array
 			typeArray,        // nested array
 			typeArray,        // innermost array
-			0x65,             // value 1 (1+100=0x65)
+			0x01,             // value 1 (type code = value)
 			typeContainerEnd, // end innermost
 			typeContainerEnd, // end nested
 			typeContainerEnd, // end outer

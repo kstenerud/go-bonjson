@@ -1381,8 +1381,8 @@ func TestInputOffsetAccuracy(t *testing.T) {
 
 // Test More() behavior after error
 func TestMoreAfterError(t *testing.T) {
-	// Create invalid data using reserved type code 0xc9 (in the 0xc9-0xcf reserved range)
-	invalidData := []byte{0xc9} // Reserved type code - invalid
+	// Create invalid data using reserved type code 0xbb (in the 0xbb-0xf4 reserved range)
+	invalidData := []byte{0xbb} // Reserved type code - invalid
 
 	dec := NewDecoder(bytes.NewReader(invalidData))
 

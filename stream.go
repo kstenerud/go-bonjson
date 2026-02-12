@@ -23,15 +23,17 @@
 //
 
 // ABOUTME: Streaming encoder/decoder, RawMessage, and Token API for BONJSON.
-// ABOUTME: Phase 2 format: delimiter-terminated containers (0xFE),
-// ABOUTME: FF-terminated long strings, native-size integers.
+// ABOUTME: Delimiter-terminated containers (0xB6), FF-terminated long
+// ABOUTME: strings, native-size integers, typed arrays, and records.
 
 package bonjson
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 )
 
 // A Decoder reads and decodes BONJSON values from an input stream.
@@ -49,6 +51,15 @@ type Decoder struct {
 	// Peeked byte for More() support
 	peekedByte    byte
 	hasPeekedByte bool
+
+	// Record definitions declared at start of document
+	recordDefs [][]string
+
+	// Record instance state for Token API: when decoding a record instance,
+	// we inject synthetic key tokens from the definition.
+	recordInstKeys   []string
+	recordInstKeyIdx int
+	recordInstActive bool
 }
 
 // tokenStackEntry stores the state needed to resume a container after processing nested containers
@@ -218,12 +229,20 @@ func (dec *Decoder) Decode(v any) error {
 	}
 
 	dec.d.init(dec.buf)
+	// Pass record definitions to the inner decode state
+	dec.d.recordDefs = dec.recordDefs
 	return dec.d.unmarshal(v)
 }
 
-// readValue reads a complete BONJSON value into dec.buf
+// readValue reads a complete BONJSON value into dec.buf,
+// consuming any record definitions first.
 func (dec *Decoder) readValue() error {
 	dec.buf = dec.buf[:0]
+
+	// Consume record definitions before the root value
+	if err := dec.consumeRecordDefinitions(); err != nil {
+		return err
+	}
 
 	// Read type code
 	tc, err := dec.readByte()
@@ -235,12 +254,73 @@ func (dec *Decoder) readValue() error {
 	return dec.readValueBody(tc)
 }
 
+// consumeRecordDefinitions reads record definitions (0xB9) from the stream.
+func (dec *Decoder) consumeRecordDefinitions() error {
+	for {
+		b, err := dec.peekByte()
+		if err != nil {
+			return err
+		}
+		if b != typeRecordDef {
+			return nil
+		}
+		dec.hasPeekedByte = false // consume the peeked byte
+
+		// Read keys until end marker
+		keys := make([]string, 0)
+		for {
+			tc, err := dec.readByte()
+			if err != nil {
+				return err
+			}
+			if tc == typeContainerEnd {
+				break
+			}
+			// Read string key
+			var key string
+			switch {
+			case tc >= typeShortStringBase && tc <= typeShortStringMax:
+				length := int(tc - typeShortStringBase)
+				buf := make([]byte, length)
+				if length > 0 {
+					if _, err := io.ReadFull(dec.r, buf); err != nil {
+						return err
+					}
+					dec.bytesRead += int64(length)
+				}
+				key = string(buf)
+			case tc == typeLongString:
+				var result []byte
+				for {
+					rb, err := dec.readByte()
+					if err != nil {
+						return err
+					}
+					if rb == typeLongString {
+						break
+					}
+					result = append(result, rb)
+				}
+				key = string(result)
+			default:
+				return &SyntaxError{msg: "expected string key in record definition", Offset: int64(dec.bytesRead)}
+			}
+			keys = append(keys, key)
+		}
+		dec.recordDefs = append(dec.recordDefs, keys)
+	}
+}
+
 // readValueBody reads the body of a value given its type code
 func (dec *Decoder) readValueBody(tc byte) error {
 	switch {
 	case tc <= typeSmallIntMax:
-		// Small integer (-100 to 100)
+		// Small integer (0 to 100)
 		return nil
+	case tc >= typeShortStringBase && tc <= typeShortStringMax:
+		// Short string (0-66 bytes)
+		length := int(tc - typeShortStringBase)
+		return dec.readBytes(length)
 	case tc >= typeUintBase && tc <= typeUintBase+3:
 		// Unsigned integer (native sizes: 1, 2, 4, 8 bytes)
 		n := nativeSizes[tc&0x03]
@@ -249,10 +329,6 @@ func (dec *Decoder) readValueBody(tc byte) error {
 		// Signed integer (native sizes: 1, 2, 4, 8 bytes)
 		n := nativeSizes[tc&0x03]
 		return dec.readBytes(n)
-	case tc&0xf0 == typeShortStringBase:
-		// Short string (0-15 bytes)
-		length := int(tc & 0x0f)
-		return dec.readBytes(length)
 	case tc == typeLongString:
 		// Long string: read until terminating 0xFF
 		return dec.readLongString()
@@ -269,9 +345,24 @@ func (dec *Decoder) readValueBody(tc byte) error {
 		return dec.readDelimitedContainer(false)
 	case tc == typeObject:
 		return dec.readDelimitedContainer(true)
+	case tc == typeRecordInst:
+		// Record instance: LEB128 def_index + values + end marker
+		return dec.readRecordInstance()
+	case tc >= typeTypedFloat64Array && tc <= typeTypedUint8Array:
+		return dec.readTypedArray(tc)
 	default:
 		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(len(dec.buf) - 1)}
 	}
+}
+
+// readRecordInstance reads a record instance (LEB128 def_index + values until end marker).
+func (dec *Decoder) readRecordInstance() error {
+	// Read definition index (LEB128)
+	if err := dec.readLEB128(); err != nil {
+		return err
+	}
+	// Read values until end marker (same as delimited container without key-value pairing)
+	return dec.readDelimitedContainer(false)
 }
 
 func (dec *Decoder) readByte() (byte, error) {
@@ -374,6 +465,21 @@ func (dec *Decoder) readLongString() error {
 			return nil // Found the terminating 0xFF
 		}
 	}
+}
+
+// readTypedArray reads a typed array (element count + data) into the buffer.
+func (dec *Decoder) readTypedArray(tc byte) error {
+	elemSize := typedArrayElementSizes[tc]
+	// Read element count (LEB128)
+	count, err := dec.readLEB128WithValue()
+	if err != nil {
+		return err
+	}
+	totalBytes := int(count) * elemSize
+	if totalBytes > 0 {
+		return dec.readBytes(totalBytes)
+	}
+	return nil
 }
 
 // readDelimitedContainer reads a delimiter-terminated container (array or object).
@@ -558,6 +664,46 @@ func (dec *Decoder) Token() (Token, error) {
 
 // readNextDelimitedItem reads the next item in a delimiter-terminated container
 func (dec *Decoder) readNextDelimitedItem() (Token, error) {
+	// For record instances in key position, inject synthetic key from definition
+	if dec.recordInstActive && (dec.tokenState == tokenObjectStart || dec.tokenState == tokenObjectKey) {
+		if dec.recordInstKeyIdx >= len(dec.recordInstKeys) {
+			// All keys consumed — next byte must be end marker
+			tc, err := dec.readByte()
+			if err != nil {
+				return nil, err
+			}
+			if tc != typeContainerEnd {
+				return nil, &SyntaxError{msg: "record instance has more values than definition keys", Offset: int64(dec.bytesRead)}
+			}
+			dec.recordInstActive = false
+			// Restore previous state
+			entry := dec.tokenStack[len(dec.tokenStack)-1]
+			dec.tokenStack = dec.tokenStack[:len(dec.tokenStack)-1]
+			dec.tokenState = entry.state
+			return Delim('}'), nil
+		}
+
+		// Peek to check for early end marker
+		b, err := dec.peekByte()
+		if err != nil {
+			return nil, err
+		}
+		if b == typeContainerEnd {
+			dec.hasPeekedByte = false // consume it
+			dec.recordInstActive = false
+			entry := dec.tokenStack[len(dec.tokenStack)-1]
+			dec.tokenStack = dec.tokenStack[:len(dec.tokenStack)-1]
+			dec.tokenState = entry.state
+			return Delim('}'), nil
+		}
+
+		// Emit synthetic key token
+		key := dec.recordInstKeys[dec.recordInstKeyIdx]
+		dec.recordInstKeyIdx++
+		dec.tokenState = tokenObjectValue
+		return key, nil
+	}
+
 	// Peek at next byte to check for container end
 	tc, err := dec.readByte()
 	if err != nil {
@@ -574,6 +720,9 @@ func (dec *Decoder) readNextDelimitedItem() (Token, error) {
 		entry := dec.tokenStack[len(dec.tokenStack)-1]
 		dec.tokenStack = dec.tokenStack[:len(dec.tokenStack)-1]
 		dec.tokenState = entry.state
+		if dec.recordInstActive {
+			dec.recordInstActive = false
+		}
 		if prevState == tokenArrayValue || prevState == tokenArrayStart {
 			return Delim(']'), nil
 		}
@@ -590,7 +739,11 @@ func (dec *Decoder) readNextDelimitedItem() (Token, error) {
 	if dec.tokenState == tokenArrayStart {
 		dec.tokenState = tokenArrayValue
 	} else if dec.tokenState == tokenObjectValue {
-		dec.tokenState = tokenObjectKey
+		if dec.recordInstActive {
+			dec.tokenState = tokenObjectKey
+		} else {
+			dec.tokenState = tokenObjectKey
+		}
 	}
 
 	return dec.readTokenValue(tc)
@@ -600,7 +753,18 @@ func (dec *Decoder) readNextDelimitedItem() (Token, error) {
 func (dec *Decoder) readTokenValue(tc byte) (Token, error) {
 	switch {
 	case tc <= typeSmallIntMax:
-		return int64(tc) - 100, nil
+		return int64(tc), nil
+
+	case tc >= typeShortStringBase && tc <= typeShortStringMax:
+		length := int(tc - typeShortStringBase)
+		buf := make([]byte, length)
+		if length > 0 {
+			if _, err := io.ReadFull(dec.r, buf); err != nil {
+				return nil, err
+			}
+			dec.bytesRead += int64(length)
+		}
+		return string(buf), nil
 
 	case tc >= typeUintBase && tc <= typeUintBase+3:
 		n := nativeSizes[tc&0x03]
@@ -620,17 +784,6 @@ func (dec *Decoder) readTokenValue(tc byte) (Token, error) {
 		dec.bytesRead += int64(n)
 		uval := readNativeSizeUint64(buf[:], n)
 		return signExtendNative(uval, n), nil
-
-	case tc&0xf0 == typeShortStringBase:
-		length := int(tc & 0x0f)
-		buf := make([]byte, length)
-		if length > 0 {
-			if _, err := io.ReadFull(dec.r, buf); err != nil {
-				return nil, err
-			}
-			dec.bytesRead += int64(length)
-		}
-		return string(buf), nil
 
 	case tc == typeLongString:
 		// Read bytes until terminating 0xFF
@@ -730,6 +883,93 @@ func (dec *Decoder) readTokenValue(tc byte) (Token, error) {
 		})
 		dec.tokenState = tokenObjectStart
 		return Delim('{'), nil
+
+	case tc == typeRecordInst:
+		// Read definition index (LEB128)
+		var defIdx uint64
+		var shift uint
+		for {
+			b, err := dec.readByte()
+			if err != nil {
+				return nil, err
+			}
+			defIdx |= uint64(b&0x7F) << shift
+			if b&0x80 == 0 {
+				break
+			}
+			shift += 7
+			if shift >= 64 {
+				return nil, &ValueRangeError{Value: "LEB128 overflow", Offset: 0}
+			}
+		}
+		if int(defIdx) >= len(dec.recordDefs) {
+			return nil, &SyntaxError{msg: "record definition index out of range", Offset: int64(dec.bytesRead)}
+		}
+		// Set up record instance state to inject keys
+		dec.recordInstKeys = dec.recordDefs[defIdx]
+		dec.recordInstKeyIdx = 0
+		dec.recordInstActive = true
+		// Present as object start
+		dec.tokenStack = append(dec.tokenStack, tokenStackEntry{
+			state: dec.tokenState,
+		})
+		dec.tokenState = tokenObjectStart
+		return Delim('{'), nil
+
+	case tc >= typeTypedFloat64Array && tc <= typeTypedUint8Array:
+		elemSize := typedArrayElementSizes[tc]
+		// Read element count (LEB128)
+		var count uint64
+		var shift uint
+		for {
+			b, err := dec.readByte()
+			if err != nil {
+				return nil, err
+			}
+			count |= uint64(b&0x7F) << shift
+			if b&0x80 == 0 {
+				break
+			}
+			shift += 7
+			if shift >= 64 {
+				return nil, &ValueRangeError{Value: "LEB128 overflow", Offset: 0}
+			}
+		}
+		totalBytes := int(count) * elemSize
+		buf := make([]byte, totalBytes)
+		if totalBytes > 0 {
+			if _, err := io.ReadFull(dec.r, buf); err != nil {
+				return nil, err
+			}
+			dec.bytesRead += int64(totalBytes)
+		}
+		result := make([]interface{}, count)
+		for i := 0; i < int(count); i++ {
+			data := buf[i*elemSize : (i+1)*elemSize]
+			switch tc {
+			case typeTypedFloat64Array:
+				result[i] = math.Float64frombits(binary.LittleEndian.Uint64(data))
+			case typeTypedFloat32Array:
+				result[i] = float64(math.Float32frombits(binary.LittleEndian.Uint32(data)))
+			case typeTypedInt64Array:
+				result[i] = int64(binary.LittleEndian.Uint64(data))
+			case typeTypedInt32Array:
+				result[i] = int64(int32(binary.LittleEndian.Uint32(data)))
+			case typeTypedInt16Array:
+				result[i] = int64(int16(binary.LittleEndian.Uint16(data)))
+			case typeTypedInt8Array:
+				result[i] = int64(int8(data[0]))
+			case typeTypedUint64Array:
+				result[i] = uint64(binary.LittleEndian.Uint64(data))
+			case typeTypedUint32Array:
+				result[i] = int64(binary.LittleEndian.Uint32(data))
+			case typeTypedUint16Array:
+				result[i] = int64(binary.LittleEndian.Uint16(data))
+			case typeTypedUint8Array:
+				result[i] = int64(data[0])
+			}
+		}
+		return result, nil
 
 	default:
 		return nil, &InvalidTypeCodeError{TypeCode: tc, Offset: 0}

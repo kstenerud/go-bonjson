@@ -241,10 +241,10 @@ func TestDuplicateKeyModeKeepFirst(t *testing.T) {
 	buf.WriteByte(typeObject)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
+	buf.WriteByte(0x01) // value 1 (small int: type code = value)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
+	buf.WriteByte(0x02) // value 2 (small int: type code = value)
 	buf.WriteByte(typeContainerEnd)
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
@@ -267,10 +267,10 @@ func TestDuplicateKeyModeReplace(t *testing.T) {
 	buf.WriteByte(typeObject)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
+	buf.WriteByte(0x01) // value 1 (small int: type code = value)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
+	buf.WriteByte(0x02) // value 2 (small int: type code = value)
 	buf.WriteByte(typeContainerEnd)
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
@@ -297,10 +297,10 @@ func TestDuplicateKeyModeWithStruct(t *testing.T) {
 	buf.WriteByte(typeObject)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
+	buf.WriteByte(0x01) // value 1 (small int: type code = value)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
+	buf.WriteByte(0x02) // value 2 (small int: type code = value)
 	buf.WriteByte(typeContainerEnd)
 
 	t.Run("keep_first", func(t *testing.T) {
@@ -336,10 +336,10 @@ func TestDuplicateKeyModeWithInterface(t *testing.T) {
 	buf.WriteByte(typeObject)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
+	buf.WriteByte(0x01) // value 1 (small int: type code = value)
 	buf.WriteByte(typeShortStringBase + 1)
 	buf.WriteByte('a')
-	buf.WriteByte(0x66) // value 2 (small int: 0x64+2)
+	buf.WriteByte(0x02) // value 2 (small int: type code = value)
 	buf.WriteByte(typeContainerEnd)
 
 	t.Run("keep_first", func(t *testing.T) {
@@ -750,7 +750,7 @@ func TestLimitEdgeValues(t *testing.T) {
 		}
 		// Innermost array contains one value
 		buf.WriteByte(typeArray)
-		buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
+		buf.WriteByte(0x01) // value 1 (small int: type code = value)
 		// Close all arrays
 		for i := 0; i < depth; i++ {
 			buf.WriteByte(typeContainerEnd)
@@ -777,7 +777,7 @@ func TestLimitEdgeValues(t *testing.T) {
 		}
 		// Innermost array contains one value
 		buf.WriteByte(typeArray)
-		buf.WriteByte(0x65) // value 1 (small int: 0x64+1)
+		buf.WriteByte(0x01) // value 1 (small int: type code = value)
 		// Close all arrays
 		for i := 0; i < depth; i++ {
 			buf.WriteByte(typeContainerEnd)
@@ -810,9 +810,9 @@ func TestLimitEdgeValues(t *testing.T) {
 	})
 
 	t.Run("string_one_over_limit", func(t *testing.T) {
-		// Create string one over limit - must be >15 chars to use long string encoding
-		// (short strings ≤15 chars bypass length limit check)
-		const limit = 20
+		// Create string one over limit - must be >66 chars to use long string encoding
+		// (short strings ≤66 chars bypass length limit check)
+		const limit = 70
 		s := strings.Repeat("x", limit+1)
 		data, _ := Marshal(s)
 

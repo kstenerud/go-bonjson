@@ -81,19 +81,19 @@ func TestDecodeFloatTruncated(t *testing.T) {
 
 func TestIntegerBoundaryValues(t *testing.T) {
 	t.Run("small_int_boundaries", func(t *testing.T) {
-		// Small integers: -100 to 100 encode as single byte (value + 100)
+		// Small integers: 0 to 100 encode as single byte (value = type code)
 		dst := make([]byte, 16)
 
-		// 0 encodes to 0x64 (0 + 100 = 100)
+		// 0 encodes to 0x00 (value = type code)
 		n := encodeUnsignedInt(dst, 0)
-		if n != 1 || dst[0] != 0x64 {
-			t.Errorf("0 should encode as single byte 0x64 (value+100), got %d bytes: %v", n, dst[:n])
+		if n != 1 || dst[0] != 0x00 {
+			t.Errorf("0 should encode as single byte 0x00 (value=tc), got %d bytes: %v", n, dst[:n])
 		}
 
-		// 100 encodes to 0xc8 (100 + 100 = 200)
+		// 100 encodes to 0x64 (value = type code)
 		n = encodeUnsignedInt(dst, 100)
-		if n != 1 || dst[0] != 0xc8 {
-			t.Errorf("100 should encode as single byte 0xc8 (value+100), got %d bytes: %v", n, dst[:n])
+		if n != 1 || dst[0] != 0x64 {
+			t.Errorf("100 should encode as single byte 0x64 (value=tc), got %d bytes: %v", n, dst[:n])
 		}
 
 		n = encodeUnsignedInt(dst, 101)
@@ -101,16 +101,16 @@ func TestIntegerBoundaryValues(t *testing.T) {
 			t.Errorf("101 should encode as 2 bytes (type + 1 data), got %d", n)
 		}
 
-		// -1 encodes to 0x63 (-1 + 100 = 99)
+		// -1 encodes as signed int: typeSintBase|0 + 0xFF = 2 bytes
 		n = encodeSignedInt(dst, -1)
-		if n != 1 || dst[0] != 0x63 {
-			t.Errorf("-1 should encode as single byte 0x63 (value+100), got %d bytes: %v", n, dst[:n])
+		if n != 2 || dst[0] != typeSintBase {
+			t.Errorf("-1 should encode as 2 bytes (typeSintBase + 0xFF), got %d bytes: %v", n, dst[:n])
 		}
 
-		// -100 encodes to 0x00 (-100 + 100 = 0)
+		// -100 encodes as signed int: typeSintBase|0 + 0x9C = 2 bytes
 		n = encodeSignedInt(dst, -100)
-		if n != 1 || dst[0] != 0x00 {
-			t.Errorf("-100 should encode as single byte 0x00 (value+100), got %d bytes: %v", n, dst[:n])
+		if n != 2 || dst[0] != typeSintBase {
+			t.Errorf("-100 should encode as 2 bytes (typeSintBase + 0x9C), got %d bytes: %v", n, dst[:n])
 		}
 
 		n = encodeSignedInt(dst, -101)
@@ -240,14 +240,14 @@ func TestBigNumberWireFormat(t *testing.T) {
 		exp      int64
 		expected []byte
 	}{
-		{"zero", 0, 0, []byte{0xca, 0x00, 0x00}},
-		{"positive_2", 2, 0, []byte{0xca, 0x00, 0x02, 0x02}},
-		{"negative_1", -1, 0, []byte{0xca, 0x00, 0x01, 0x01}},
-		{"decimal_1_5", 15, -1, []byte{0xca, 0x01, 0x02, 0x0f}},
-		{"value_1000", 10, 2, []byte{0xca, 0x04, 0x02, 0x0a}},
-		{"value_255", 255, 0, []byte{0xca, 0x00, 0x02, 0xff}},
-		{"value_65535", 65535, 0, []byte{0xca, 0x00, 0x04, 0xff, 0xff}},
-		{"value_65537", 65537, 0, []byte{0xca, 0x00, 0x06, 0x01, 0x00, 0x01}},
+		{"zero", 0, 0, []byte{0xb2, 0x00, 0x00}},
+		{"positive_2", 2, 0, []byte{0xb2, 0x00, 0x02, 0x02}},
+		{"negative_1", -1, 0, []byte{0xb2, 0x00, 0x01, 0x01}},
+		{"decimal_1_5", 15, -1, []byte{0xb2, 0x01, 0x02, 0x0f}},
+		{"value_1000", 10, 2, []byte{0xb2, 0x04, 0x02, 0x0a}},
+		{"value_255", 255, 0, []byte{0xb2, 0x00, 0x02, 0xff}},
+		{"value_65535", 65535, 0, []byte{0xb2, 0x00, 0x04, 0xff, 0xff}},
+		{"value_65537", 65537, 0, []byte{0xb2, 0x00, 0x06, 0x01, 0x00, 0x01}},
 	}
 
 	for _, tt := range tests {
@@ -539,12 +539,12 @@ func TestEncodeNumberOptimalFormat(t *testing.T) {
 		wantType  byte
 		wantBytes int
 	}{
-		// Small integers encode as value + 100
-		{"small_int_zero", 0, 0x64, 1},        // 0 + 100 = 0x64
-		{"small_int_100", 100, 0xc8, 1},       // 100 + 100 = 200 = 0xc8
+		// Small integers encode as value = type code (0 to 100)
+		{"small_int_zero", 0, 0x00, 1},         // 0 = 0x00
+		{"small_int_100", 100, 0x64, 1},        // 100 = 0x64
 		{"sint_101", 101, typeSintBase, 2},     // Prefer signed per spec when same size
-		{"small_neg_minus1", -1, 0x63, 1},      // -1 + 100 = 99 = 0x63
-		{"small_neg_minus100", -100, 0x00, 1},  // -100 + 100 = 0
+		{"small_neg_minus1", -1, typeSintBase, 2},     // Negative uses signed int encoding
+		{"small_neg_minus100", -100, typeSintBase, 2}, // Negative uses signed int encoding
 		{"sint_minus101", -101, typeSintBase, 2},
 		{"float32", 0.5, typeFloat32, 5},
 		{"float64", 0.1, typeFloat64, 9},
@@ -592,27 +592,35 @@ func TestEncodeNumberRejectsNaNInf(t *testing.T) {
 
 func TestStringEncodingBoundary(t *testing.T) {
 	t.Run("short_string_max", func(t *testing.T) {
-		s := "123456789012345" // 15 bytes - max short string
-		dst := make([]byte, 32)
-		n := encodeString(dst, s)
-		if n != 16 { // 1 type byte + 15 data bytes
-			t.Errorf("15-byte string should encode to 16 bytes, got %d", n)
+		// Short string range: 0x65-0xA7, length = tc - 0x65
+		// Max short string: 0xA7 - 0x65 = 66 bytes
+		s := string(make([]byte, 66)) // 66 bytes - max short string
+		for i := range s {
+			s = s[:i] + "x" + s[i+1:]
 		}
-		if dst[0] != typeShortStringBase+15 {
-			t.Errorf("type byte should be 0x%02x, got 0x%02x", typeShortStringBase+15, dst[0])
+		dst := make([]byte, 128)
+		n := encodeString(dst, s)
+		if n != 67 { // 1 type byte + 66 data bytes
+			t.Errorf("66-byte string should encode to 67 bytes, got %d", n)
+		}
+		if dst[0] != typeShortStringBase+66 {
+			t.Errorf("type byte should be 0x%02x, got 0x%02x", typeShortStringBase+66, dst[0])
 		}
 	})
 
 	t.Run("long_string_min", func(t *testing.T) {
-		s := "1234567890123456" // 16 bytes - min long string
-		dst := make([]byte, 32)
+		s := string(make([]byte, 67)) // 67 bytes - min long string
+		for i := range s {
+			s = s[:i] + "x" + s[i+1:]
+		}
+		dst := make([]byte, 128)
 		n := encodeString(dst, s)
-		// Long string: 0xFF + 16 data bytes + 0xFF = 18
+		// Long string: 0xFF + 67 data bytes + 0xFF = 69
 		if dst[0] != typeLongString {
 			t.Errorf("type byte should be 0x%02x, got 0x%02x", typeLongString, dst[0])
 		}
-		if n != 18 {
-			t.Errorf("16-byte string should encode to 18 bytes, got %d", n)
+		if n != 69 {
+			t.Errorf("67-byte string should encode to 69 bytes, got %d", n)
 		}
 	})
 

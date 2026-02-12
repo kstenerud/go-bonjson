@@ -549,9 +549,11 @@ func BenchmarkDecodeInteger_SmallPositive(b *testing.B) {
 }
 
 func BenchmarkDecodeInteger_SmallNegative(b *testing.B) {
-	// Small negative integer: encoded as single byte type code
-	typeCode := byte(0xCE) // -50 as unsigned byte
-	data := []byte{}
+	// Negative integers use signed int encoding (no small int encoding for negatives)
+	var buf [16]byte
+	n := encodeSignedInt(buf[:], -50)
+	typeCode := buf[0]
+	data := buf[1:n]
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		decodeInteger(data, typeCode)

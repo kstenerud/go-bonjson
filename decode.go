@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"encoding"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/big"
@@ -160,6 +161,9 @@ type decodeState struct {
 	seenStructFieldsStack [][]bool
 	seenStructFieldsDepth int
 
+	// Record definitions declared at the start of the document.
+	recordDefs [][]string
+
 	savedError error
 }
 
@@ -187,6 +191,7 @@ func newDecodeState() *decodeState {
 	d.maxAllowedBigNumExponent = defaultMaxBigNumberExponent
 	d.containerDepth = 0
 	d.seenStructFieldsDepth = 0
+	d.recordDefs = d.recordDefs[:0]
 	return d
 }
 
@@ -292,6 +297,11 @@ func (d *decodeState) unmarshal(v any) error {
 		return &InvalidUnmarshalError{reflect.TypeOf(v)}
 	}
 
+	// Consume record definitions before the root value
+	if err := d.consumeRecordDefinitions(); err != nil {
+		return err
+	}
+
 	err := d.decodeValue(rv)
 	if err != nil {
 		return err
@@ -346,8 +356,8 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 
 	switch {
 	case tc <= typeSmallIntMax:
-		// Small integer (-100 to 100): value = type_code - 100
-		return d.storeInt(int64(tc)-100, pv, ut)
+		// Small integer (0 to 100): value = type_code
+		return d.storeInt(int64(tc), pv, ut)
 
 	case tc >= typeUintBase && tc <= typeUintBase+3:
 		// Unsigned integer (native sizes: 1, 2, 4, 8 bytes)
@@ -416,9 +426,9 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 		// since indirect() returns an invalid pv when TextUnmarshaler is found
 		return d.storeBigNumber(bn, v, pv, ut)
 
-	case tc&0xf0 == typeShortStringBase:
-		// Short string (0-15 bytes)
-		length := int(tc & 0x0f)
+	case tc >= typeShortStringBase && tc <= typeShortStringMax:
+		// Short string (0-66 bytes)
+		length := int(tc - typeShortStringBase)
 		if d.offsetIntoData+length > len(d.data) {
 			return &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
@@ -448,6 +458,12 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 
 	case tc == typeObject:
 		return d.decodeObject(pv, v)
+
+	case tc == typeRecordInst:
+		return d.decodeRecordInstance(pv, v)
+
+	case tc >= typeTypedFloat64Array && tc <= typeTypedUint8Array:
+		return d.decodeTypedArray(tc, pv)
 
 	default:
 		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.offsetIntoData - 1)}
@@ -1518,8 +1534,8 @@ func (d *decodeState) readString() ([]byte, error) {
 	}
 
 	switch {
-	case tc&0xf0 == typeShortStringBase:
-		length := int(tc & 0x0f)
+	case tc >= typeShortStringBase && tc <= typeShortStringMax:
+		length := int(tc - typeShortStringBase)
 		if d.offsetIntoData+length > len(d.data) {
 			return nil, &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
@@ -1544,7 +1560,7 @@ func (d *decodeState) readString() ([]byte, error) {
 func (d *decodeState) skipValue(tc byte) error {
 	switch {
 	case tc <= typeSmallIntMax:
-		// Small integer (-100 to 100)
+		// Small integer (0 to 100)
 		return nil
 	case tc >= typeUintBase && tc <= typeUintBase+3:
 		n := nativeSizes[tc&0x03]
@@ -1582,8 +1598,8 @@ func (d *decodeState) skipValue(tc byte) error {
 		}
 		d.offsetIntoData += n
 		return nil
-	case tc&0xf0 == typeShortStringBase:
-		length := int(tc & 0x0f)
+	case tc >= typeShortStringBase && tc <= typeShortStringMax:
+		length := int(tc - typeShortStringBase)
 		if d.offsetIntoData+length > len(d.data) {
 			return &TruncatedDataError{Expected: length, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
 		}
@@ -1602,6 +1618,10 @@ func (d *decodeState) skipValue(tc byte) error {
 		return d.skipContainer()
 	case tc == typeObject:
 		return d.skipContainer()
+	case tc == typeRecordInst:
+		return d.skipRecordInstance()
+	case tc >= typeTypedFloat64Array && tc <= typeTypedUint8Array:
+		return d.skipTypedArray(tc)
 	default:
 		return &InvalidTypeCodeError{TypeCode: tc, Offset: int64(d.offsetIntoData - 1)}
 	}
@@ -1628,6 +1648,444 @@ func (d *decodeState) skipContainer() error {
 			return err
 		}
 	}
+}
+
+// decodeTypedArray decodes a typed array (homogeneous numeric array) into v.
+func (d *decodeState) decodeTypedArray(tc byte, v reflect.Value) error {
+	if err := d.enterContainer(); err != nil {
+		return err
+	}
+	defer d.exitContainer()
+
+	elemSize := typedArrayElementSizes[tc]
+
+	// Read element count (unsigned LEB128)
+	count, n, err := decodeLEB128(d.data[d.offsetIntoData:])
+	if err != nil {
+		return err
+	}
+	d.offsetIntoData += n
+
+	// Check container size limit
+	if d.maxAllowedContainerSize > 0 && int(count) > d.maxAllowedContainerSize {
+		return &MaxContainerSizeError{Size: int(count), Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+	}
+
+	totalBytes := int(count) * elemSize
+	if d.offsetIntoData+totalBytes > len(d.data) {
+		return &TruncatedDataError{Expected: totalBytes, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
+	}
+
+	// Handle interface{} target
+	vKind := v.Kind()
+	if vKind == reflect.Interface && v.NumMethod() == 0 {
+		result := d.typedArrayToInterface(tc, int(count), elemSize)
+		if d.savedError != nil {
+			return d.savedError
+		}
+		v.Set(reflect.ValueOf(result))
+		return nil
+	}
+
+	// Handle typed slice targets
+	if vKind == reflect.Slice || vKind == reflect.Array {
+		return d.typedArrayToSlice(tc, int(count), elemSize, v)
+	}
+
+	// Unsupported target type — skip and save error
+	d.saveError(&UnmarshalTypeError{Value: "array", Type: v.Type(), Offset: int64(d.offsetIntoData)})
+	d.offsetIntoData += totalBytes
+	return nil
+}
+
+// typedArrayToInterface decodes a typed array into []interface{} with individual numbers.
+func (d *decodeState) typedArrayToInterface(tc byte, count, elemSize int) []interface{} {
+	result := make([]interface{}, count)
+	for i := 0; i < count; i++ {
+		data := d.data[d.offsetIntoData : d.offsetIntoData+elemSize]
+		switch tc {
+		case typeTypedFloat64Array:
+			result[i] = math.Float64frombits(binary.LittleEndian.Uint64(data))
+		case typeTypedFloat32Array:
+			result[i] = float64(math.Float32frombits(binary.LittleEndian.Uint32(data)))
+		case typeTypedInt64Array:
+			result[i] = int64(binary.LittleEndian.Uint64(data))
+		case typeTypedInt32Array:
+			result[i] = int64(int32(binary.LittleEndian.Uint32(data)))
+		case typeTypedInt16Array:
+			result[i] = int64(int16(binary.LittleEndian.Uint16(data)))
+		case typeTypedInt8Array:
+			result[i] = int64(int8(data[0]))
+		case typeTypedUint64Array:
+			result[i] = uint64(binary.LittleEndian.Uint64(data))
+		case typeTypedUint32Array:
+			result[i] = int64(binary.LittleEndian.Uint32(data))
+		case typeTypedUint16Array:
+			result[i] = int64(binary.LittleEndian.Uint16(data))
+		case typeTypedUint8Array:
+			result[i] = int64(data[0])
+		}
+		d.offsetIntoData += elemSize
+	}
+	return result
+}
+
+// typedArrayToSlice decodes a typed array directly into a Go slice or array.
+func (d *decodeState) typedArrayToSlice(tc byte, count, elemSize int, v reflect.Value) error {
+	isSlice := v.Kind() == reflect.Slice
+	vLen := v.Len()
+
+	if isSlice {
+		if count > v.Cap() {
+			v.Grow(count - v.Cap())
+		}
+		v.SetLen(count)
+	}
+
+	limit := count
+	if !isSlice && vLen < limit {
+		limit = vLen
+	}
+
+	for i := 0; i < limit; i++ {
+		data := d.data[d.offsetIntoData : d.offsetIntoData+elemSize]
+		elem := v.Index(i)
+
+		switch tc {
+		case typeTypedFloat64Array:
+			f := math.Float64frombits(binary.LittleEndian.Uint64(data))
+			if err := d.storeFloat(f, elem, nil); err != nil {
+				return err
+			}
+		case typeTypedFloat32Array:
+			f := float64(math.Float32frombits(binary.LittleEndian.Uint32(data)))
+			if err := d.storeFloat(f, elem, nil); err != nil {
+				return err
+			}
+		case typeTypedInt64Array:
+			if err := d.storeInt(int64(binary.LittleEndian.Uint64(data)), elem, nil); err != nil {
+				return err
+			}
+		case typeTypedInt32Array:
+			if err := d.storeInt(int64(int32(binary.LittleEndian.Uint32(data))), elem, nil); err != nil {
+				return err
+			}
+		case typeTypedInt16Array:
+			if err := d.storeInt(int64(int16(binary.LittleEndian.Uint16(data))), elem, nil); err != nil {
+				return err
+			}
+		case typeTypedInt8Array:
+			if err := d.storeInt(int64(int8(data[0])), elem, nil); err != nil {
+				return err
+			}
+		case typeTypedUint64Array:
+			if err := d.storeUint(binary.LittleEndian.Uint64(data), elem, nil); err != nil {
+				return err
+			}
+		case typeTypedUint32Array:
+			if err := d.storeUint(uint64(binary.LittleEndian.Uint32(data)), elem, nil); err != nil {
+				return err
+			}
+		case typeTypedUint16Array:
+			if err := d.storeUint(uint64(binary.LittleEndian.Uint16(data)), elem, nil); err != nil {
+				return err
+			}
+		case typeTypedUint8Array:
+			if err := d.storeUint(uint64(data[0]), elem, nil); err != nil {
+				return err
+			}
+		}
+		d.offsetIntoData += elemSize
+	}
+
+	// Skip remaining elements that don't fit in fixed-size array
+	if !isSlice && count > vLen {
+		d.offsetIntoData += (count - vLen) * elemSize
+	}
+
+	// Zero remaining elements in fixed arrays
+	if !isSlice {
+		for i := count; i < vLen; i++ {
+			v.Index(i).SetZero()
+		}
+	}
+	if count == 0 && isSlice {
+		v.Set(reflect.MakeSlice(v.Type(), 0, 0))
+	}
+	return nil
+}
+
+// skipTypedArray skips a typed array by reading count and advancing past data.
+func (d *decodeState) skipTypedArray(tc byte) error {
+	elemSize := typedArrayElementSizes[tc]
+	count, n, err := decodeLEB128(d.data[d.offsetIntoData:])
+	if err != nil {
+		return err
+	}
+	d.offsetIntoData += n
+	totalBytes := int(count) * elemSize
+	if d.offsetIntoData+totalBytes > len(d.data) {
+		return &TruncatedDataError{Expected: totalBytes, Got: len(d.data) - d.offsetIntoData, Offset: int64(d.offsetIntoData)}
+	}
+	d.offsetIntoData += totalBytes
+	return nil
+}
+
+// consumeRecordDefinitions reads all record definitions (0xB9) at the start
+// of a document. Definitions must precede the root value.
+func (d *decodeState) consumeRecordDefinitions() error {
+	for {
+		b, err := d.peekByte()
+		if err != nil {
+			return err
+		}
+		if b != typeRecordDef {
+			return nil
+		}
+		d.offsetIntoData++ // consume the 0xB9
+
+		keys := make([]string, 0)
+		totalKeys := 0
+		for {
+			b, err := d.peekByte()
+			if err != nil {
+				return err
+			}
+			if b == typeContainerEnd {
+				d.offsetIntoData++ // consume end marker
+				break
+			}
+
+			// Check container size limit
+			if d.maxAllowedContainerSize > 0 && totalKeys >= d.maxAllowedContainerSize {
+				return &MaxContainerSizeError{Size: totalKeys + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)}
+			}
+
+			key, err := d.readString()
+			if err != nil {
+				return err
+			}
+			keyStr := string(key)
+
+			// Check for duplicate keys within this definition
+			if d.duplicateKeyMode == DupKeyReject {
+				for _, existing := range keys {
+					if existing == keyStr {
+						return &DuplicateKeyError{Key: keyStr, Offset: int64(d.offsetIntoData)}
+					}
+				}
+			}
+
+			keys = append(keys, keyStr)
+			totalKeys++
+		}
+		d.recordDefs = append(d.recordDefs, keys)
+	}
+}
+
+// decodeRecordInstance decodes a record instance (0xBA) as an object.
+func (d *decodeState) decodeRecordInstance(v reflect.Value, origV reflect.Value) error {
+	if err := d.enterContainer(); err != nil {
+		return err
+	}
+	defer d.exitContainer()
+
+	if len(d.recordDefs) == 0 {
+		return &SyntaxError{msg: "record instance in document with no record definitions", Offset: int64(d.offsetIntoData - 1)}
+	}
+
+	// Read definition index (unsigned LEB128)
+	defIdx, n, err := decodeLEB128(d.data[d.offsetIntoData:])
+	if err != nil {
+		return err
+	}
+	d.offsetIntoData += n
+
+	if int(defIdx) >= len(d.recordDefs) {
+		return &SyntaxError{msg: fmt.Sprintf("record definition index %d out of range (have %d definitions)", defIdx, len(d.recordDefs)), Offset: int64(d.offsetIntoData)}
+	}
+
+	keys := d.recordDefs[defIdx]
+
+	vKind := v.Kind()
+
+	// Handle interface{} — decode as map[string]any
+	if vKind == reflect.Interface && v.NumMethod() == 0 {
+		m := d.recordInstanceToInterface(keys)
+		if d.savedError != nil {
+			return d.savedError
+		}
+		v.Set(reflect.ValueOf(m))
+		return nil
+	}
+
+	switch vKind {
+	case reflect.Map:
+		return d.decodeRecordInstanceToMap(v, keys)
+	case reflect.Struct:
+		return d.decodeRecordInstanceToStruct(v, keys)
+	default:
+		d.saveError(&UnmarshalTypeError{Value: "object", Type: v.Type(), Offset: int64(d.offsetIntoData)})
+		return d.skipContainer()
+	}
+}
+
+// recordInstanceToInterface decodes a record instance into map[string]any.
+func (d *decodeState) recordInstanceToInterface(keys []string) map[string]any {
+	m := make(map[string]any)
+	keyIdx := 0
+	totalValues := 0
+
+	for {
+		b, err := d.peekByte()
+		if err != nil {
+			d.saveError(err)
+			return m
+		}
+		if b == typeContainerEnd {
+			d.offsetIntoData++ // consume end marker
+			break
+		}
+
+		if keyIdx >= len(keys) {
+			// More values than keys — invalid
+			d.saveError(&SyntaxError{msg: "record instance has more values than definition keys", Offset: int64(d.offsetIntoData)})
+			return m
+		}
+
+		// Check container size limit
+		if d.maxAllowedContainerSize > 0 && totalValues >= d.maxAllowedContainerSize {
+			d.saveError(&MaxContainerSizeError{Size: totalValues + 1, Max: d.maxAllowedContainerSize, Offset: int64(d.offsetIntoData)})
+			return m
+		}
+
+		var val any
+		ev := reflect.ValueOf(&val).Elem()
+		if err := d.decodeValue(ev); err != nil {
+			d.saveError(err)
+			return m
+		}
+		m[keys[keyIdx]] = val
+		keyIdx++
+		totalValues++
+	}
+
+	// Fill remaining keys with null
+	for i := keyIdx; i < len(keys); i++ {
+		m[keys[i]] = nil
+	}
+
+	return m
+}
+
+// decodeRecordInstanceToMap decodes a record instance into a Go map.
+func (d *decodeState) decodeRecordInstanceToMap(v reflect.Value, keys []string) error {
+	t := v.Type()
+	kt := t.Key()
+
+	if kt.Kind() != reflect.String {
+		d.saveError(&UnmarshalTypeError{Value: "object", Type: t, Offset: int64(d.offsetIntoData)})
+		return d.skipContainer()
+	}
+
+	if v.IsNil() {
+		v.Set(reflect.MakeMap(t))
+	}
+
+	elemType := t.Elem()
+	mapElem := reflect.New(elemType).Elem()
+	keyIdx := 0
+
+	for {
+		b, err := d.peekByte()
+		if err != nil {
+			return err
+		}
+		if b == typeContainerEnd {
+			d.offsetIntoData++
+			break
+		}
+
+		if keyIdx >= len(keys) {
+			return &SyntaxError{msg: "record instance has more values than definition keys", Offset: int64(d.offsetIntoData)}
+		}
+
+		mapElem.SetZero()
+		if err := d.decodeValue(mapElem); err != nil {
+			return err
+		}
+
+		kv := reflect.ValueOf(keys[keyIdx])
+		if kt != stringType {
+			kv = kv.Convert(kt)
+		}
+		v.SetMapIndex(kv, mapElem)
+		keyIdx++
+	}
+
+	// Fill remaining keys with zero value
+	for i := keyIdx; i < len(keys); i++ {
+		kv := reflect.ValueOf(keys[i])
+		if kt != stringType {
+			kv = kv.Convert(kt)
+		}
+		v.SetMapIndex(kv, reflect.Zero(elemType))
+	}
+	return nil
+}
+
+// decodeRecordInstanceToStruct decodes a record instance into a Go struct.
+func (d *decodeState) decodeRecordInstanceToStruct(v reflect.Value, keys []string) error {
+	fields := cachedTypeFields(v.Type())
+	seenFields := d.pushSeenStructFields(fields.fieldCount)
+	defer d.popSeenStructFields()
+	keyIdx := 0
+
+	for {
+		b, err := d.peekByte()
+		if err != nil {
+			return err
+		}
+		if b == typeContainerEnd {
+			d.offsetIntoData++
+			break
+		}
+
+		if keyIdx >= len(keys) {
+			return &SyntaxError{msg: "record instance has more values than definition keys", Offset: int64(d.offsetIntoData)}
+		}
+
+		key := []byte(keys[keyIdx])
+		keyStart := d.offsetIntoData
+
+		fieldValue, skip := d.findStructFieldWithDupCheck(v, &fields, key, keyStart, seenFields)
+		if skip {
+			if err := d.decodeValue(reflect.Value{}); err != nil {
+				return err
+			}
+			keyIdx++
+			continue
+		}
+
+		if err := d.decodeValue(fieldValue); err != nil {
+			return err
+		}
+		keyIdx++
+	}
+	return nil
+}
+
+// skipRecordInstance skips a record instance (LEB128 def_index + values until end marker).
+func (d *decodeState) skipRecordInstance() error {
+	// Skip definition index (LEB128)
+	_, n, err := decodeLEB128(d.data[d.offsetIntoData:])
+	if err != nil {
+		return err
+	}
+	d.offsetIntoData += n
+
+	// Skip values until end marker
+	return d.skipContainer()
 }
 
 // arrayInterface decodes an array into []any

@@ -91,9 +91,9 @@ func nativeSizeIndex(neededBytes int) int {
 // encodeSignedInt encodes a signed integer using the smallest native size.
 // Returns the number of bytes written (1 for type code + native size for value).
 func encodeSignedInt(dst []byte, v int64) int {
-	// Try small int first (type code = value + 100)
+	// Try small int first (type code = value, for 0..100)
 	if v >= smallIntMin && v <= smallIntMax {
-		dst[0] = byte(v + 100)
+		dst[0] = byte(v)
 		return 1
 	}
 
@@ -125,9 +125,9 @@ func encodeSignedInt(dst []byte, v int64) int {
 // prefer signed.
 // Returns the number of bytes written (1 for type code + native size for value).
 func encodeUnsignedInt(dst []byte, v uint64) int {
-	// Try small int first (0-100, type code = value + 100)
+	// Try small int first (0-100, type code = value)
 	if v <= 100 {
-		dst[0] = byte(v + 100)
+		dst[0] = byte(v)
 		return 1
 	}
 
@@ -158,12 +158,9 @@ func encodeUnsignedInt(dst []byte, v uint64) int {
 func decodeInteger(src []byte, typeCode byte) (signedVal int64, unsignedVal uint64, n int, err error) {
 	switch {
 	case typeCode <= typeSmallIntMax:
-		// Small integer (-100 to 100): value = type_code - 100
-		val := int64(typeCode) - 100
-		if val >= 0 {
-			return val, uint64(val), 0, nil
-		}
-		return val, 0, 0, nil
+		// Small integer (0 to 100): value = type_code
+		val := int64(typeCode)
+		return val, uint64(val), 0, nil
 
 	case typeCode >= typeUintBase && typeCode <= typeUintBase+3:
 		// Unsigned integer (native sizes: 1, 2, 4, 8 bytes)
@@ -233,10 +230,10 @@ func decodeFloat64(src []byte) (float64, error) {
 // String Encoding/Decoding
 // ============================================================================
 
-// encodeShortString encodes a short string (0-15 bytes). Returns bytes written.
+// encodeShortString encodes a short string (0-66 bytes). Returns bytes written.
 func encodeShortString(dst []byte, s string) int {
 	n := len(s)
-	dst[0] = typeShortStringBase | byte(n)
+	dst[0] = typeShortStringBase + byte(n)
 	copy(dst[1:], s)
 	return 1 + n
 }

@@ -64,12 +64,12 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 4. Encoder cache (sync.Map) avoids repeated reflection for custom types
 
 ### Type-Specific Encoding
-- **Small integers** (-100 to +100): Single byte (type code = value + 100, so 0x00-0xC8)
+- **Small integers** (0 to 100): Single byte (type code = value, so 0x00-0x64)
 - **Large integers**: Type code + native-size bytes (1, 2, 4, or 8) little-endian
 - **Floats**: Auto-selects float32 (5 bytes) or float64 (9 bytes)
-- **Short strings** (0-15 bytes): Type code encodes length (0xD0-0xDF)
+- **Short strings** (0-66 bytes): Type code encodes length (0x65-0xA7)
 - **Long strings**: 0xFF + raw data bytes + 0xFF (delimiter-terminated)
-- **Arrays/Objects**: Type code (0xFC/0xFD) + values + 0xFE end marker (delimiter-terminated)
+- **Arrays/Objects**: Type code (0xB7/0xB8) + values + 0xB6 end marker (delimiter-terminated)
 - **Maps**: Sorted by key for deterministic output
 - **Structs**: Uses cached field metadata, respects omitempty/omitzero
 
@@ -135,51 +135,66 @@ All defaults follow the BONJSON spec "Resource Limits" table:
 
 ## Wire Format
 
-### Type Codes (Phase 2 format)
+### Type Codes
 ```
-0x00-0xC8  Small integers (-100 to +100, type code = value + 100)
-0xC9       Reserved
-0xCA       BigNumber (zigzag LEB128 exponent + zigzag LEB128 signed_length + LE magnitude)
-0xCB       Float32
-0xCC       Float64
-0xCD       Null
-0xCE       False
-0xCF       True
-0xD0-0xDF  Short strings (0-15 bytes, length = tc & 0x0F)
-0xE0-0xE3  Unsigned integers (native sizes: 1, 2, 4, 8 bytes)
-0xE4-0xE7  Signed integers (native sizes: 1, 2, 4, 8 bytes)
-0xE8-0xFB  Reserved
-0xFC       Array (delimiter-terminated)
-0xFD       Object (delimiter-terminated)
-0xFE       Container end marker
+0x00-0x64  Small integers (0 to 100, type code = value)
+0x65-0xA7  Short strings (0-66 bytes, length = tc - 0x65)
+0xA8-0xAB  Unsigned integers (native sizes: 1, 2, 4, 8 bytes)
+0xAC-0xAF  Signed integers (native sizes: 1, 2, 4, 8 bytes)
+0xB0       Float32
+0xB1       Float64
+0xB2       BigNumber (zigzag LEB128 exponent + zigzag LEB128 signed_length + LE magnitude)
+0xB3       Null
+0xB4       False
+0xB5       True
+0xB6       Container end marker
+0xB7       Array (delimiter-terminated)
+0xB8       Object (delimiter-terminated)
+0xB9       Record definition (string keys + end marker)
+0xBA       Record instance (LEB128 def_index + values + end marker)
+0xBB-0xF4  Reserved
+0xF5-0xFE  Typed arrays (LEB128 count + packed element data)
 0xFF       Long string (0xFF + data + 0xFF)
 ```
 
-Type codes are arranged to enable efficient mask-based detection:
-- Short strings: `tc&0xF0 == 0xD0` matches 0xD0-0xDF, length = `tc&0x0F`
-- Unsigned integers: `tc&0xFC == 0xE0` matches 0xE0-0xE3, size index = `tc&0x03`, byte count = `1 << sizeIndex`
-- Signed integers: `tc&0xFC == 0xE4` matches 0xE4-0xE7, size index = `tc&0x03`, byte count = `1 << sizeIndex`
+Type code detection:
+- Small integers: `tc <= 0x64`, value = `tc`
+- Short strings: `tc >= 0x65 && tc <= 0xA7`, length = `tc - 0x65`
+- Unsigned integers: `tc&0xFC == 0xA8`, size index = `tc&0x03`, byte count = `1 << sizeIndex`
+- Signed integers: `tc&0xFC == 0xAC`, size index = `tc&0x03`, byte count = `1 << sizeIndex`
 
 ### Delimiter-Terminated Containers
 Arrays and objects use end-marker termination:
-- Array: 0xFC + values + 0xFE
-- Object: 0xFD + key-value pairs + 0xFE
+- Array: 0xB7 + values + 0xB6
+- Object: 0xB8 + key-value pairs + 0xB6
 - This enables streaming without knowing element count up front
 
 ### Long Strings
-Long strings (>15 bytes) use delimiter termination:
+Long strings (>66 bytes) use delimiter termination:
 - 0xFF + raw data bytes + 0xFF
 - The data bytes themselves cannot contain 0xFF (strings are UTF-8, and 0xFF is not valid UTF-8)
 - UTF-8 validation happens on the complete string
 
 ### BigNumber Format
-Encoded as 0xCA + zigzag LEB128 exponent (base-10) + zigzag LEB128 signed_length + LE magnitude bytes.
+Encoded as 0xB2 + zigzag LEB128 exponent (base-10) + zigzag LEB128 signed_length + LE magnitude bytes.
 - **exponent**: zigzag LEB128 signed integer, base-10 exponent
 - **signed_length**: zigzag LEB128 signed integer encoding both sign and byte count of magnitude.
   Positive = positive significand, negative = negative significand, zero = significand is zero (no magnitude bytes)
 - **magnitude_bytes**: unsigned little-endian integer, exactly abs(signed_length) bytes, normalized (last byte non-zero)
 - Value = sign(signed_length) × magnitude × 10^exponent
 - No special value encoding; NaN and Infinity are not representable in BigNumber
+
+### Typed Arrays
+Format: `[type_code] [element_count (LEB128)] [data bytes...]`
+- Type codes 0xF5-0xFE map to element types (float64, float32, int64..int8, uint64..uint8)
+- Data is packed contiguously in little-endian byte order
+- Semantically identical to a regular array of numbers
+
+### Records
+Record definitions (0xB9) appear at the start of a document before the root value.
+Each definition declares a list of key strings terminated by 0xB6.
+Record instances (0xBA) reference a definition by LEB128 index and supply values
+positionally matched to the keys. Semantically identical to objects.
 
 
 ## Struct Field Caching
