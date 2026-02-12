@@ -419,6 +419,7 @@ Some tests require capabilities not all implementations support. Tests declare r
 | `arbitrary_precision_bignumber` | Yes | BigNumber with >17 significant digits. When decoding to `interface{}`, go-bonjson uses `*big.Int` or `*big.Float` when primitives would lose precision. |
 | `bignumber_exponent_gt_127` | Yes | BigNumber exponents > 127 (uses 2-3 byte exponent encoding) |
 | `bignumber_exponent_lt_neg128` | Yes | BigNumber exponents < -128 (uses 2-3 byte exponent encoding) |
+| `nan_infinity_reject` | Yes | NaN/Infinity rejected by default in float32/float64 values |
 | `nan_infinity_stringify` | Yes | Converting NaN/Infinity to string representations (`NaNInfStringify` mode) |
 | `out_of_range_stringify` | Yes | Converting out-of-range BigNumbers to string representations (`OutOfRangeStringify` mode) |
 

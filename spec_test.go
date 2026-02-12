@@ -76,6 +76,9 @@ var supportedCapabilities = map[string]bool{
 	"bignumber_exponent_gt_127":    true,
 	"bignumber_exponent_lt_neg128": true,
 
+	// Supported: NaN/Infinity rejected by default
+	"nan_infinity_reject": true,
+
 	// Supported: Converting NaN/Infinity to string representations during decoding
 	"nan_infinity_stringify": true,
 
