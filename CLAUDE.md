@@ -59,7 +59,7 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 
 ### Flow
 1. `Marshal(v)` gets an `encodeState` from sync.Pool
-2. `marshal()` uses panic/recover for error propagation
+2. `marshal()` analyzes type tree for record candidates, writes definitions, then uses panic/recover for error propagation
 3. `reflectValue()` dispatches to type-specific encoder via `valueEncoder()`
 4. Encoder cache (sync.Map) avoids repeated reflection for custom types
 
@@ -69,9 +69,24 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 - **Floats**: Auto-selects float32 (5 bytes) or float64 (9 bytes)
 - **Short strings** (0-66 bytes): Type code encodes length (0x65-0xA7)
 - **Long strings**: 0xFF + raw data bytes + 0xFF (delimiter-terminated)
-- **Arrays/Objects**: Type code (0xB7/0xB8) + values + 0xB6 end marker (delimiter-terminated)
+- **Typed arrays**: Homogeneous numeric slices/arrays → type code + LEB128 count + packed LE data
+- **Regular arrays**: Type code (0xB7) + values + 0xB6 end marker (for non-numeric or custom-marshaled elements)
+- **Objects**: Type code (0xB8) + key-value pairs + 0xB6 end marker
+- **Records**: Struct types in slices/arrays emit record definitions + instances (eliminates repeated keys)
 - **Maps**: Sorted by key for deterministic output
 - **Structs**: Uses cached field metadata, respects omitempty/omitzero
+
+### Smart Encoding Features (automatic)
+
+**Typed Arrays**: Slices and arrays of primitive numeric types (`int8`..`int64`, `uint16`..`uint64`, `float32`, `float64`, `int`, `uint`) are encoded as typed arrays. This eliminates per-element type codes, packing data contiguously. `[]byte` remains base64-encoded; `[N]byte` fixed arrays use typed uint8 arrays. Types with custom `Marshaler`/`TextMarshaler` fall back to regular arrays.
+
+**Records**: When `Marshal()` or `Encoder.Encode()` encounters struct types as elements of slices/arrays, it automatically:
+1. Analyzes the type tree (cached per root type) to find eligible struct types
+2. Writes record definitions (key names) before the root value
+3. Encodes struct instances as record instances (positional values, no repeated keys)
+- Trailing null values from omitted fields are elided
+- Structs with custom `Marshaler`/`TextMarshaler` are excluded
+- Top-level structs (not in slices/arrays) remain regular objects
 
 ### Custom Type Priority
 1. `Marshaler` interface (`MarshalBONJSON() ([]byte, error)`)

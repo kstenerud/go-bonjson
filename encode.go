@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"encoding"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/big"
@@ -137,6 +138,9 @@ type encodeState struct {
 	maxDepth int
 	// Current container nesting depth
 	depth int
+
+	// Record definitions for the current document (nil if no records)
+	recordDefs *recordAnalysis
 }
 
 const startDetectingCyclesAfter = 1000
@@ -155,6 +159,7 @@ func newEncodeState() *encodeState {
 		e.allowNUL = false
 		e.maxDepth = 0
 		e.depth = 0
+		e.recordDefs = nil
 		return e
 	}
 	return &encodeState{ptrSeen: make(map[any]struct{}), nanInfMode: NaNInfReject}
@@ -173,7 +178,26 @@ func (e *encodeState) marshal(v any, opts encOpts) (err error) {
 			}
 		}
 	}()
-	e.reflectValue(reflect.ValueOf(v), opts)
+
+	rv := reflect.ValueOf(v)
+
+	// Analyze type tree for record candidates
+	if rv.IsValid() {
+		if ra := analyzeTypeForRecords(rv.Type()); ra != nil {
+			e.recordDefs = ra
+			// Write record definitions before the root value
+			for _, def := range ra.defs {
+				e.WriteByte(typeRecordDef)
+				fields := cachedTypeFields(def.structType)
+				for i := range fields.list {
+					e.writeString(fields.list[i].name)
+				}
+				e.WriteByte(typeContainerEnd)
+			}
+		}
+	}
+
+	e.reflectValue(rv, opts)
 	return nil
 }
 
@@ -751,9 +775,18 @@ func unsupportedTypeEncoder(e *encodeState, v reflect.Value, _ encOpts) {
 
 type structEncoder struct {
 	fields structFields
+	typ    reflect.Type
 }
 
 func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
+	// Check if this struct type should be encoded as a record instance
+	if e.recordDefs != nil {
+		if defIdx, ok := e.recordDefs.typeToIndex[se.typ]; ok {
+			se.encodeRecordInstance(e, v, opts, defIdx)
+			return
+		}
+	}
+
 	e.enterContainer()
 	// Write object type code
 	e.WriteByte(typeObject)
@@ -794,8 +827,68 @@ func (se structEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 	e.exitContainer()
 }
 
+// encodeRecordInstance writes a record instance: 0xBA + LEB128(defIndex) + values + 0xB6.
+// Values are positional, matching the field order from the record definition.
+// Trailing null values (from omitted fields) are elided.
+func (se structEncoder) encodeRecordInstance(e *encodeState, v reflect.Value, opts encOpts, defIdx int) {
+	e.enterContainer()
+	// Write record instance type code
+	e.WriteByte(typeRecordInst)
+
+	// Write definition index as LEB128
+	var leb [10]byte
+	lebN := encodeLEB128(leb[:], uint64(defIdx))
+	e.Write(leb[:lebN])
+
+	// Determine field values and find last non-empty field
+	type fieldValue struct {
+		fv    reflect.Value
+		f     *field
+		empty bool // field is omitted (nil pointer chain or omitempty/omitzero)
+	}
+
+	fvs := make([]fieldValue, len(se.fields.list))
+	lastNonEmpty := -1
+	for i := range se.fields.list {
+		f := &se.fields.list[i]
+		fv := v
+		skip := false
+		for _, idx := range f.index {
+			if fv.Kind() == reflect.Pointer {
+				if fv.IsNil() {
+					skip = true
+					break
+				}
+				fv = fv.Elem()
+			}
+			fv = fv.Field(idx)
+		}
+		empty := skip ||
+			(f.omitEmpty && isEmptyValue(fv)) ||
+			(f.omitZero && (f.isZero == nil && fv.IsZero() || (f.isZero != nil && f.isZero(fv))))
+		fvs[i] = fieldValue{fv: fv, f: f, empty: empty}
+		if !empty {
+			lastNonEmpty = i
+		}
+	}
+
+	// Write values up to and including lastNonEmpty
+	for i := 0; i <= lastNonEmpty; i++ {
+		if fvs[i].empty {
+			e.WriteByte(typeNull)
+		} else {
+			opts.quoted = fvs[i].f.quoted
+			fvs[i].f.encoder(e, fvs[i].fv, opts)
+		}
+	}
+
+	// Write container end marker
+	e.WriteByte(typeContainerEnd)
+	e.exitContainer()
+}
+
 func newStructEncoder(t reflect.Type) encoderFunc {
-	se := structEncoder{fields: cachedTypeFields(t)}
+	se := structEncoder{fields: cachedTypeFields(t), typ: t}
 	return se.encode
 }
 
@@ -1003,6 +1096,107 @@ func encodeByteSlice(e *encodeState, v reflect.Value, _ encOpts) {
 	e.writeString(encoded)
 }
 
+// typedArrayTypeCode returns the typed array type code and element byte size for a Go kind.
+// Returns (0, 0) if the kind is not eligible for typed array encoding.
+func typedArrayTypeCode(k reflect.Kind) (typeCode byte, elemSize int) {
+	switch k {
+	case reflect.Float64:
+		return typeTypedFloat64Array, 8
+	case reflect.Float32:
+		return typeTypedFloat32Array, 4
+	case reflect.Int64:
+		return typeTypedInt64Array, 8
+	case reflect.Int32:
+		return typeTypedInt32Array, 4
+	case reflect.Int16:
+		return typeTypedInt16Array, 2
+	case reflect.Int8:
+		return typeTypedInt8Array, 1
+	case reflect.Uint64:
+		return typeTypedUint64Array, 8
+	case reflect.Uint32:
+		return typeTypedUint32Array, 4
+	case reflect.Uint16:
+		return typeTypedUint16Array, 2
+	case reflect.Uint8:
+		return typeTypedUint8Array, 1
+	case reflect.Int:
+		return typeTypedInt64Array, 8
+	case reflect.Uint:
+		return typeTypedUint64Array, 8
+	default:
+		return 0, 0
+	}
+}
+
+// encodeTypedArray writes a typed array: type_code + LEB128(count) + packed LE data.
+// typeCode is the typed array type code, elemSize is bytes per element.
+func encodeTypedArray(e *encodeState, v reflect.Value, typeCode byte, elemSize int) {
+	n := v.Len()
+
+	// Write type code
+	e.WriteByte(typeCode)
+
+	// Write element count as LEB128
+	var leb [10]byte
+	lebN := encodeLEB128(leb[:], uint64(n))
+	e.Write(leb[:lebN])
+
+	if n == 0 {
+		return
+	}
+
+	// Write packed element data in little-endian order
+	// Use a buffer to batch writes
+	var buf [8]byte
+	for i := 0; i < n; i++ {
+		elem := v.Index(i)
+		switch elemSize {
+		case 1:
+			switch typeCode {
+			case typeTypedInt8Array:
+				e.WriteByte(byte(int8(elem.Int())))
+			default: // uint8
+				e.WriteByte(byte(elem.Uint()))
+			}
+		case 2:
+			switch typeCode {
+			case typeTypedInt16Array:
+				binary.LittleEndian.PutUint16(buf[:2], uint16(int16(elem.Int())))
+			default: // uint16
+				binary.LittleEndian.PutUint16(buf[:2], uint16(elem.Uint()))
+			}
+			e.Write(buf[:2])
+		case 4:
+			switch typeCode {
+			case typeTypedFloat32Array:
+				binary.LittleEndian.PutUint32(buf[:4], math.Float32bits(float32(elem.Float())))
+			case typeTypedInt32Array:
+				binary.LittleEndian.PutUint32(buf[:4], uint32(int32(elem.Int())))
+			default: // uint32
+				binary.LittleEndian.PutUint32(buf[:4], uint32(elem.Uint()))
+			}
+			e.Write(buf[:4])
+		case 8:
+			switch typeCode {
+			case typeTypedFloat64Array:
+				binary.LittleEndian.PutUint64(buf[:8], math.Float64bits(elem.Float()))
+			case typeTypedInt64Array:
+				binary.LittleEndian.PutUint64(buf[:8], uint64(elem.Int()))
+			default: // uint64
+				binary.LittleEndian.PutUint64(buf[:8], elem.Uint())
+			}
+			e.Write(buf[:8])
+		}
+	}
+}
+
+func newTypedArrayEncoder(typeCode byte, elemSize int) encoderFunc {
+	return func(e *encodeState, v reflect.Value, opts encOpts) {
+		encodeTypedArray(e, v, typeCode, elemSize)
+	}
+}
+
 type sliceEncoder struct {
 	arrayEnc encoderFunc
 }
@@ -1035,6 +1229,18 @@ func newSliceEncoder(t reflect.Type) encoderFunc {
 			return encodeByteSlice
 		}
 	}
+	// Check for typed array eligibility (numeric element types)
+	elemKind := t.Elem().Kind()
+	if typeCode, elemSize := typedArrayTypeCode(elemKind); typeCode != 0 {
+		// Skip if element type has custom marshaling
+		elemType := t.Elem()
+		p := reflect.PointerTo(elemType)
+		if !elemType.Implements(marshalerType) && !p.Implements(marshalerType) &&
+			!elemType.Implements(textMarshalerType) && !p.Implements(textMarshalerType) {
+			enc := sliceEncoder{newTypedArrayEncoder(typeCode, elemSize)}
+			return enc.encode
+		}
+	}
 	enc := sliceEncoder{newArrayEncoder(t)}
 	return enc.encode
 }
@@ -1056,6 +1262,17 @@ func (ae arrayEncoder) encode(e *encodeState, v reflect.Value, opts encOpts) {
 }
 
 func newArrayEncoder(t reflect.Type) encoderFunc {
+	// Check for typed array eligibility (numeric element types)
+	elemKind := t.Elem().Kind()
+	if typeCode, elemSize := typedArrayTypeCode(elemKind); typeCode != 0 {
+		// Skip if element type has custom marshaling
+		elemType := t.Elem()
+		p := reflect.PointerTo(elemType)
+		if !elemType.Implements(marshalerType) && !p.Implements(marshalerType) &&
+			!elemType.Implements(textMarshalerType) && !p.Implements(textMarshalerType) {
+			return newTypedArrayEncoder(typeCode, elemSize)
+		}
+	}
 	enc := arrayEncoder{typeEncoder(t.Elem())}
 	return enc.encode
 }
@@ -1126,4 +1343,105 @@ func resolveKeyName(k reflect.Value) (string, error) {
 		return strconv.FormatUint(k.Uint(), 10), nil
 	}
 	panic("unexpected map key type")
+}
+
+// ============================================================================
+// Record Analysis
+// ============================================================================
+
+// recordDef represents a single record definition (a struct type eligible for record encoding).
+type recordDef struct {
+	structType reflect.Type
+}
+
+// recordAnalysis holds the mapping from struct types to record definition indices.
+type recordAnalysis struct {
+	defs        []recordDef            // ordered list of definitions
+	typeToIndex map[reflect.Type]int   // struct type → definition index
+}
+
+var recordAnalysisCache sync.Map // map[reflect.Type]*recordAnalysis
+
+// analyzeTypeForRecords performs a DFS walk of the type tree to find struct types
+// that are elements of slices or arrays. These struct types become record candidates,
+// since encoding them as record instances avoids repeating key strings.
+// Returns nil if no record candidates are found.
+func analyzeTypeForRecords(t reflect.Type) *recordAnalysis {
+	if ra, ok := recordAnalysisCache.Load(t); ok {
+		return ra.(*recordAnalysis)
+	}
+
+	var defs []recordDef
+	typeToIndex := make(map[reflect.Type]int)
+	visited := make(map[reflect.Type]bool)
+
+	var walk func(t reflect.Type, isSliceElem bool)
+	walk = func(t reflect.Type, isSliceElem bool) {
+		// Dereference pointers
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+
+		if visited[t] {
+			return
+		}
+		visited[t] = true
+
+		switch t.Kind() {
+		case reflect.Struct:
+			// Check if this struct type has custom marshaling (skip if so)
+			if t.Implements(marshalerType) || reflect.PointerTo(t).Implements(marshalerType) ||
+				t.Implements(textMarshalerType) || reflect.PointerTo(t).Implements(textMarshalerType) {
+				return
+			}
+			// Skip big.Int and big.Float which have special encoding
+			if t == bigIntType.Elem() || t == bigFloatType.Elem() {
+				return
+			}
+
+			fields := cachedTypeFields(t)
+			if len(fields.list) == 0 {
+				return
+			}
+
+			// If this struct is an element of a slice/array, register as record candidate
+			if isSliceElem {
+				if _, exists := typeToIndex[t]; !exists {
+					typeToIndex[t] = len(defs)
+					defs = append(defs, recordDef{structType: t})
+				}
+			}
+
+			// Walk struct fields to find nested record candidates
+			for i := range fields.list {
+				f := &fields.list[i]
+				walk(f.typ, false)
+			}
+
+		case reflect.Slice, reflect.Array:
+			elemType := t.Elem()
+			// Dereference pointer element
+			for elemType.Kind() == reflect.Pointer {
+				elemType = elemType.Elem()
+			}
+			// Walk the element type as a slice element
+			walk(elemType, true)
+
+		case reflect.Map:
+			walk(t.Elem(), false)
+		}
+	}
+
+	walk(t, false)
+
+	var result *recordAnalysis
+	if len(defs) > 0 {
+		result = &recordAnalysis{
+			defs:        defs,
+			typeToIndex: typeToIndex,
+		}
+	}
+
+	recordAnalysisCache.Store(t, result)
+	return result
 }

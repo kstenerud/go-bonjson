@@ -257,6 +257,252 @@ func TestMarshalSliceArray(t *testing.T) {
 	}
 }
 
+func TestTypedArrayEncoding(t *testing.T) {
+	tests := []struct {
+		name             string
+		value            any
+		expectedTypeCode byte
+		expectedElemSize int
+	}{
+		{"int8_slice", []int8{1, 2, 3}, typeTypedInt8Array, 1},
+		{"int16_slice", []int16{100, 200, 300}, typeTypedInt16Array, 2},
+		{"int32_slice", []int32{1000, 2000, 3000}, typeTypedInt32Array, 4},
+		{"int64_slice", []int64{10000, 20000, 30000}, typeTypedInt64Array, 8},
+		{"uint8_array", [3]uint8{1, 2, 3}, typeTypedUint8Array, 1},
+		{"uint16_array", [3]uint16{100, 200, 300}, typeTypedUint16Array, 2},
+		{"uint32_array", [3]uint32{1000, 2000, 3000}, typeTypedUint32Array, 4},
+		{"uint64_array", [3]uint64{10000, 20000, 30000}, typeTypedUint64Array, 8},
+		{"float32_slice", []float32{1.5, 2.5, 3.5}, typeTypedFloat32Array, 4},
+		{"float64_slice", []float64{1.5, 2.5, 3.5}, typeTypedFloat64Array, 8},
+		{"int_slice", []int{1, 2, 3}, typeTypedInt64Array, 8},
+		{"uint_slice", []uint{1, 2, 3}, typeTypedUint64Array, 8},
+		{"empty_int_slice", []int{}, typeTypedInt64Array, 8},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+
+			// Check that first byte is the expected type code
+			if len(data) == 0 {
+				t.Fatal("encoded data is empty")
+			}
+			if data[0] != tt.expectedTypeCode {
+				t.Errorf("expected type code 0x%02X, got 0x%02X", tt.expectedTypeCode, data[0])
+			}
+
+			// Verify roundtrip
+			ptr := reflect.New(reflect.TypeOf(tt.value))
+			if err := Unmarshal(data, ptr.Interface()); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			got := ptr.Elem().Interface()
+			if !reflect.DeepEqual(got, tt.value) {
+				t.Errorf("roundtrip:\n  got:  %v\n  want: %v", got, tt.value)
+			}
+		})
+	}
+}
+
+func TestRecordEncoding(t *testing.T) {
+	type Point struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{"slice_of_structs", []Point{{1, 2}, {3, 4}, {5, 6}}},
+		{"array_of_structs", [2]Point{{10, 20}, {30, 40}}},
+		{"single_element", []Point{{1, 2}}},
+		{"empty_slice", []Point{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+
+			// Verify first byte is record definition (0xB9) for non-empty slices
+			rv := reflect.ValueOf(tt.value)
+			if rv.Len() > 0 && data[0] != typeRecordDef {
+				t.Errorf("expected first byte to be record definition 0x%02X, got 0x%02X", typeRecordDef, data[0])
+			}
+
+			// Verify roundtrip
+			ptr := reflect.New(reflect.TypeOf(tt.value))
+			if err := Unmarshal(data, ptr.Interface()); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			got := ptr.Elem().Interface()
+			if !reflect.DeepEqual(got, tt.value) {
+				t.Errorf("roundtrip:\n  got:  %v\n  want: %v", got, tt.value)
+			}
+		})
+	}
+}
+
+func TestRecordEncodingNested(t *testing.T) {
+	type Inner struct {
+		A string `json:"a"`
+		B int    `json:"b"`
+	}
+	type Outer struct {
+		Name  string  `json:"name"`
+		Items []Inner `json:"items"`
+	}
+
+	value := Outer{
+		Name: "test",
+		Items: []Inner{
+			{"hello", 1},
+			{"world", 2},
+		},
+	}
+
+	data, err := Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Verify roundtrip
+	var got Outer
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if !reflect.DeepEqual(got, value) {
+		t.Errorf("roundtrip:\n  got:  %v\n  want: %v", got, value)
+	}
+}
+
+func TestRecordEncodingOmitempty(t *testing.T) {
+	type Item struct {
+		Name  string `json:"name"`
+		Value int    `json:"value,omitempty"`
+		Extra string `json:"extra,omitempty"`
+	}
+
+	value := []Item{
+		{"first", 1, ""},
+		{"second", 0, "present"},
+		{"third", 0, ""},
+	}
+
+	data, err := Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Verify roundtrip
+	var got []Item
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if !reflect.DeepEqual(got, value) {
+		t.Errorf("roundtrip:\n  got:  %v\n  want: %v", got, value)
+	}
+}
+
+func TestRecordNotUsedForTopLevelStruct(t *testing.T) {
+	type Simple struct {
+		X int `json:"x"`
+	}
+
+	// A top-level struct (not in a slice) should be encoded as a regular object
+	data, err := Marshal(Simple{42})
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// First byte should be object type code, not record definition
+	if data[0] == typeRecordDef {
+		t.Error("top-level struct should not generate record definitions")
+	}
+	if data[0] != typeObject {
+		t.Errorf("expected object type code 0x%02X, got 0x%02X", typeObject, data[0])
+	}
+}
+
+func TestRecordEncodingWithPointers(t *testing.T) {
+	type Item struct {
+		Name  string `json:"name"`
+		Value int    `json:"value"`
+	}
+
+	a := Item{"a", 1}
+	b := Item{"b", 2}
+	value := []*Item{&a, &b}
+
+	data, err := Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Verify roundtrip
+	var got []*Item
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if len(got) != 2 || *got[0] != a || *got[1] != b {
+		t.Errorf("roundtrip failed: got %v", got)
+	}
+}
+
+func TestRecordEncodingStreaming(t *testing.T) {
+	type Item struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	value := []Item{{1, "alice"}, {2, "bob"}}
+
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	if err := enc.Encode(value); err != nil {
+		t.Fatalf("Encode error: %v", err)
+	}
+
+	// Verify roundtrip via streaming decoder
+	dec := NewDecoder(bytes.NewReader(buf.Bytes()))
+	var got []Item
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if !reflect.DeepEqual(got, value) {
+		t.Errorf("roundtrip:\n  got:  %v\n  want: %v", got, value)
+	}
+}
+
+func TestRecordEncodingNilInSlice(t *testing.T) {
+	type Item struct {
+		Name string `json:"name"`
+	}
+
+	value := []*Item{{"a"}, nil, {"c"}}
+
+	data, err := Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var got []*Item
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if len(got) != 3 || got[0].Name != "a" || got[1] != nil || got[2].Name != "c" {
+		t.Errorf("roundtrip failed: got %v", got)
+	}
+}
+
 // ============================================================================
 // Map Tests
 // ============================================================================

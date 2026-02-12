@@ -521,7 +521,8 @@ func TestDecoderToken(t *testing.T) {
 }
 
 func TestDecoderTokenArray(t *testing.T) {
-	original := []int{1, 2, 3}
+	// Use []interface{} with mixed types to ensure regular array encoding (not typed array)
+	original := []interface{}{1, "two", 3}
 	data, _ := Marshal(original)
 	dec := NewDecoder(bytes.NewReader(data))
 
@@ -534,13 +535,13 @@ func TestDecoderTokenArray(t *testing.T) {
 		t.Errorf("expected '[', got %v", tok)
 	}
 
-	// Three integers
+	// Three elements
 	for i := 1; i <= 3; i++ {
 		tok, err = dec.Token()
 		if err != nil {
 			t.Fatalf("Token error: %v", err)
 		}
-		// May be int, int64, float64, or Number depending on implementation
+		// May be int, int64, float64, string, or Number depending on implementation
 	}
 
 	// Array end
@@ -1300,7 +1301,8 @@ func TestMixedTokenAndDecode(t *testing.T) {
 // Test Token() on empty containers
 func TestTokenEmptyContainers(t *testing.T) {
 	t.Run("empty_array", func(t *testing.T) {
-		data, _ := Marshal([]int{})
+		// Use []interface{} to ensure regular array encoding (not typed array)
+		data, _ := Marshal([]interface{}{})
 		dec := NewDecoder(bytes.NewReader(data))
 
 		tok, err := dec.Token()
@@ -1483,7 +1485,8 @@ func TestTokenDelimiterTypes(t *testing.T) {
 		expected []Token
 	}{
 		{
-			[]int{1},
+			// Use []interface{} to ensure regular array encoding (not typed array)
+			[]interface{}{1},
 			[]Token{Delim('['), int64(1), Delim(']')},
 		},
 		{
