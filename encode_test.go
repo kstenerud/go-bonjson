@@ -503,6 +503,76 @@ func TestRecordEncodingNilInSlice(t *testing.T) {
 	}
 }
 
+func TestRecordEncodingMapValues(t *testing.T) {
+	type Point struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{"map_of_structs", map[string]Point{"a": {1, 2}, "b": {3, 4}}},
+		{"map_of_struct_pointers", map[string]*Point{"a": {1, 2}, "b": {3, 4}}},
+		{"single_entry", map[string]Point{"only": {10, 20}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+
+			// Verify first byte is record definition (0xB9)
+			if data[0] != typeRecordDef {
+				t.Errorf("expected first byte to be record definition 0x%02X, got 0x%02X", typeRecordDef, data[0])
+			}
+
+			// Verify roundtrip
+			ptr := reflect.New(reflect.TypeOf(tt.value))
+			if err := Unmarshal(data, ptr.Interface()); err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			got := ptr.Elem().Interface()
+			if !reflect.DeepEqual(got, tt.value) {
+				t.Errorf("roundtrip:\n  got:  %v\n  want: %v", got, tt.value)
+			}
+		})
+	}
+}
+
+func TestRecordEncodingMapNestedSlice(t *testing.T) {
+	type Item struct {
+		Name string `json:"name"`
+	}
+
+	// Both map values and slice elements should use the same record definition
+	value := map[string][]Item{
+		"group1": {{Name: "a"}, {Name: "b"}},
+		"group2": {{Name: "c"}},
+	}
+
+	data, err := Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	if data[0] != typeRecordDef {
+		t.Errorf("expected first byte to be record definition 0x%02X, got 0x%02X", typeRecordDef, data[0])
+	}
+
+	var got map[string][]Item
+	if err := Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if !reflect.DeepEqual(got, value) {
+		t.Errorf("roundtrip:\n  got:  %v\n  want: %v", got, value)
+	}
+}
+
 // ============================================================================
 // Map Tests
 // ============================================================================

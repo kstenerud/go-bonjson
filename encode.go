@@ -1375,8 +1375,8 @@ func analyzeTypeForRecords(t reflect.Type) *recordAnalysis {
 	typeToIndex := make(map[reflect.Type]int)
 	visited := make(map[reflect.Type]bool)
 
-	var walk func(t reflect.Type, isSliceElem bool)
-	walk = func(t reflect.Type, isSliceElem bool) {
+	var walk func(t reflect.Type, isContainerElem bool)
+	walk = func(t reflect.Type, isContainerElem bool) {
 		// Dereference pointers
 		for t.Kind() == reflect.Pointer {
 			t = t.Elem()
@@ -1404,8 +1404,8 @@ func analyzeTypeForRecords(t reflect.Type) *recordAnalysis {
 				return
 			}
 
-			// If this struct is an element of a slice/array, register as record candidate
-			if isSliceElem {
+			// If this struct is an element of a container (slice/array/map), register as record candidate
+			if isContainerElem {
 				if _, exists := typeToIndex[t]; !exists {
 					typeToIndex[t] = len(defs)
 					defs = append(defs, recordDef{structType: t})
@@ -1428,7 +1428,7 @@ func analyzeTypeForRecords(t reflect.Type) *recordAnalysis {
 			walk(elemType, true)
 
 		case reflect.Map:
-			walk(t.Elem(), false)
+			walk(t.Elem(), true)
 		}
 	}
 
