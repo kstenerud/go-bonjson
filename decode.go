@@ -421,6 +421,14 @@ func (d *decodeState) decodeValue(v reflect.Value) error {
 			}
 			return limErr
 		}
+		// Check if BigNumber value exceeds float64 range (~1.8e308)
+		if rangeErr := d.checkBigNumberValueRange(bn); rangeErr != nil {
+			if d.outOfRangeMode == OutOfRangeStringify {
+				d.offsetIntoData += n
+				return d.storeString([]byte(bigNumberToString(bn)), pv, ut)
+			}
+			return rangeErr
+		}
 		d.offsetIntoData += n
 		// For *big.Int and *big.Float, use the original value v to preserve type info
 		// since indirect() returns an invalid pv when TextUnmarshaler is found
@@ -714,6 +722,45 @@ func (d *decodeState) checkBigNumberLimits(bn *BigNumber) error {
 			Exponent: 0, // Can't represent in int64
 			Max:      d.maxAllowedBigNumExponent,
 			Offset:   int64(d.offsetIntoData),
+		}
+	}
+
+	return nil
+}
+
+// checkBigNumberValueRange checks if a BigNumber's value exceeds float64 range.
+// Float64 max is approximately 1.8e308, so any value with more than 309 decimal
+// digits (counting significand digits + exponent) is out of range.
+// Only positive exponents cause overflow; negative exponents produce small values
+// that float64 can represent (as subnormal or zero).
+func (d *decodeState) checkBigNumberValueRange(bn *BigNumber) error {
+	if bn.Significand == nil || bn.Significand.Sign() == 0 {
+		return nil // zero is in range
+	}
+	if bn.Exponent == nil || !bn.Exponent.IsInt64() {
+		// If exponent doesn't fit int64, check sign
+		if bn.Exponent != nil && bn.Exponent.Sign() > 0 {
+			return &ValueRangeError{
+				Value:  bigNumberToString(bn),
+				Offset: int64(d.offsetIntoData),
+			}
+		}
+		return nil // negative or zero exponent means small value
+	}
+
+	exp := bn.Exponent.Int64()
+	if exp <= 0 {
+		return nil // negative exponent makes value smaller
+	}
+
+	// Estimate log10 of the value: byte_length * log10(256) + exponent
+	// log10(256) ≈ 2.408, so byte_length * 2.408 is an upper bound for digit count
+	sigBytes := bn.Significand.Bytes()
+	approxDigits := int64(float64(len(sigBytes))*2.408) + exp
+	if approxDigits > 308 {
+		return &ValueRangeError{
+			Value:  bigNumberToString(bn),
+			Offset: int64(d.offsetIntoData),
 		}
 	}
 

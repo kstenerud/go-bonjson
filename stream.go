@@ -524,11 +524,13 @@ func (dec *Decoder) Buffered() io.Reader {
 
 // An Encoder writes BONJSON values to an output stream.
 type Encoder struct {
-	w          io.Writer
-	err        error
-	nanInfMode NaNInfinityMode
-	allowNUL   bool
-	maxDepth   int
+	w                  io.Writer
+	err                error
+	nanInfMode         NaNInfinityMode
+	allowNUL           bool
+	maxDepth           int
+	maxBigNumMagnitude int
+	maxBigNumExponent  int
 }
 
 // NewEncoder returns a new encoder that writes to w.
@@ -559,6 +561,16 @@ func (enc *Encoder) AllowNUL() { enc.allowNUL = true }
 // The default is 0 (no limit).
 func (enc *Encoder) SetMaxDepth(n int) { enc.maxDepth = n }
 
+// SetMaxBigNumberMagnitude sets the maximum allowed byte length for big number magnitudes.
+// The default is 0 (no limit on encoder).
+// Setting to 0 will disable this check.
+func (enc *Encoder) SetMaxBigNumberMagnitude(n int) { enc.maxBigNumMagnitude = n }
+
+// SetMaxBigNumberExponent sets the maximum allowed absolute value for big number exponents.
+// The default is 0 (no limit on encoder).
+// Setting to 0 will disable this check.
+func (enc *Encoder) SetMaxBigNumberExponent(n int) { enc.maxBigNumExponent = n }
+
 // Encode writes the BONJSON encoding of v to the stream.
 func (enc *Encoder) Encode(v any) error {
 	if enc.err != nil {
@@ -571,6 +583,8 @@ func (enc *Encoder) Encode(v any) error {
 	e.nanInfMode = enc.nanInfMode
 	e.allowNUL = enc.allowNUL
 	e.maxDepth = enc.maxDepth
+	e.maxBigNumMagnitude = enc.maxBigNumMagnitude
+	e.maxBigNumExponent = enc.maxBigNumExponent
 
 	err := e.marshal(v, encOpts{})
 	if err != nil {

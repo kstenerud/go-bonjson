@@ -76,17 +76,11 @@ var supportedCapabilities = map[string]bool{
 	"bignumber_exponent_gt_127":    true,
 	"bignumber_exponent_lt_neg128": true,
 
-	// Supported: NaN/Infinity rejected by default
-	"nan_infinity_reject": true,
-
 	// Supported: Converting NaN/Infinity to string representations during decoding
 	"nan_infinity_stringify": true,
 
 	// Supported: Converting out-of-range BigNumbers to string representations
 	"out_of_range_stringify": true,
-
-	// Supported: Encoder rejects NUL characters in strings by default
-	"encode_nul_rejection": true,
 
 	// Supported: Platform capabilities
 	"uint64":        true,
@@ -114,7 +108,7 @@ var recognizedOptions = map[string]string{
 	// String options with enum values
 	"nan_infinity_behavior": "string:reject,allow,stringify",
 	"duplicate_key":         "string:reject,keep_first,keep_last",
-	"invalid_utf8":          "string:reject,replace,delete,ignore,pass_through",
+	"invalid_utf8":          "string:reject,replace,delete,pass_through",
 	"out_of_range":              "string:error,stringify",
 	"unicode_normalization":     "string:none,nfc",
 }
@@ -126,7 +120,6 @@ var recognizedErrorTypes = map[string]bool{
 	"invalid_type_code":           true,
 	"invalid_utf8":                true,
 	"nul_character":               true,
-	"nul_in_string":               true, // alias for nul_character
 	"duplicate_key":               true,
 	"unclosed_container":          true,
 	"invalid_data":                true,
@@ -136,13 +129,8 @@ var recognizedErrorTypes = map[string]bool{
 	"max_string_length_exceeded":  true,
 	"max_container_size_exceeded": true,
 	"max_document_size_exceeded":  true,
-	"nan_not_allowed":                  true, // NaN value when not allowed
-	"infinity_not_allowed":             true, // Infinity value when not allowed
 	"max_bignumber_magnitude_exceeded": true,
 	"max_bignumber_exponent_exceeded":  true,
-	"invalid_record_index":             true, // record instance references non-existent definition
-	"record_too_many_values":           true, // record instance has more values than definition keys
-	"record_no_definitions":            true, // record instance in document with no definitions
 }
 
 // testNamePattern validates test names: must start with letter, contain only letters/digits/underscores
@@ -858,6 +846,14 @@ func applyEncoderOptions(enc *Encoder, opts map[string]interface{}) {
 
 	if v, ok := opts["max_depth"].(float64); ok {
 		enc.SetMaxDepth(int(v))
+	}
+
+	if v, ok := opts["max_bignumber_magnitude"].(float64); ok {
+		enc.SetMaxBigNumberMagnitude(int(v))
+	}
+
+	if v, ok := opts["max_bignumber_exponent"].(float64); ok {
+		enc.SetMaxBigNumberExponent(int(v))
 	}
 
 	// Handle nan_infinity_behavior option (string mode: "allow", "stringify", "reject")

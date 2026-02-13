@@ -107,6 +107,7 @@ go run ./cmd/bonjson-test/ testdata/test-config.json
 - **UTF-8**: `utf8.Valid()` fast path, byte-by-byte scan for error position
 - **NUL characters**: `bytes.IndexByte()` check (configurable via `AllowNUL()`)
 - **NaN/Infinity**: Rejected in float decoders (BigNumber cannot represent these values)
+- **BigNumber value range**: BigNumbers whose value exceeds float64 range (~1.8e308) are rejected by default (configurable via `SetOutOfRangeMode`)
 
 ### Configurable Limits (on Decoder)
 All defaults follow the BONJSON spec "Resource Limits" table:
@@ -262,7 +263,7 @@ For typical structs (<20 fields), linear search beats hash map lookup. The field
 - `SetNaNInfinityMode(NaNInfAllow)` - allow NaN/Infinity as float values
 - `SetNaNInfinityMode(NaNInfStringify)` - convert NaN/Infinity to strings
 
-Note: Both Encoder and Decoder support `SetNaNInfinityMode()` and `AllowNUL()` for consistent handling.
+Note: Both Encoder and Decoder support `SetNaNInfinityMode()`, `AllowNUL()`, `SetMaxBigNumberMagnitude()`, and `SetMaxBigNumberExponent()` for consistent handling. Encoder defaults for BigNumber limits are 0 (no limit); Decoder defaults follow the spec resource limits table.
 
 
 ## Common Patterns
@@ -365,7 +366,7 @@ The runner recognizes these standardized error types:
 | `trailing_bytes` | Unconsumed bytes after decoding |
 | `invalid_type_code` | Unrecognized or reserved type code |
 | `invalid_utf8` | Invalid UTF-8 byte sequence |
-| `nul_character` / `nul_in_string` | NUL (U+0000) byte in string |
+| `nul_character` | NUL (U+0000) byte in string |
 | `duplicate_key` | Duplicate key in object |
 | `unclosed_container` | Missing container end marker |
 | `invalid_data` | Generic invalid data |
@@ -375,8 +376,6 @@ The runner recognizes these standardized error types:
 | `max_string_length_exceeded` | String exceeds length limit |
 | `max_container_size_exceeded` | Container has too many elements |
 | `max_document_size_exceeded` | Document exceeds size limit |
-| `nan_not_allowed` | NaN value when not allowed |
-| `infinity_not_allowed` | Infinity value when not allowed |
 | `max_bignumber_magnitude_exceeded` | BigNumber magnitude exceeds byte length limit |
 | `max_bignumber_exponent_exceeded` | BigNumber exponent exceeds absolute value limit |
 
@@ -434,7 +433,6 @@ Some tests require capabilities not all implementations support. Tests declare r
 | `arbitrary_precision_bignumber` | Yes | BigNumber with >17 significant digits. When decoding to `interface{}`, go-bonjson uses `*big.Int` or `*big.Float` when primitives would lose precision. |
 | `bignumber_exponent_gt_127` | Yes | BigNumber exponents > 127 (uses 2-3 byte exponent encoding) |
 | `bignumber_exponent_lt_neg128` | Yes | BigNumber exponents < -128 (uses 2-3 byte exponent encoding) |
-| `nan_infinity_reject` | Yes | NaN/Infinity rejected by default in float32/float64 values |
 | `nan_infinity_stringify` | Yes | Converting NaN/Infinity to string representations (`NaNInfStringify` mode) |
 | `out_of_range_stringify` | Yes | Converting out-of-range BigNumbers to string representations (`OutOfRangeStringify` mode) |
 

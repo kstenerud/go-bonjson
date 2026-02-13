@@ -139,6 +139,11 @@ type encodeState struct {
 	// Current container nesting depth
 	depth int
 
+	// Maximum big number magnitude byte length (0 = no limit)
+	maxBigNumMagnitude int
+	// Maximum big number exponent absolute value (0 = no limit)
+	maxBigNumExponent int
+
 	// Record definitions for the current document (nil if no records)
 	recordDefs *recordAnalysis
 }
@@ -159,6 +164,8 @@ func newEncodeState() *encodeState {
 		e.allowNUL = false
 		e.maxDepth = 0
 		e.depth = 0
+		e.maxBigNumMagnitude = 0
+		e.maxBigNumExponent = 0
 		e.recordDefs = nil
 		return e
 	}
@@ -452,6 +459,40 @@ func addrTextMarshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 }
 
 // bigIntEncoder encodes *big.Int as a BONJSON BigNumber.
+// checkBigNumberLimits checks if a BigNumber exceeds configured magnitude or exponent limits.
+func (e *encodeState) checkBigNumberLimits(bn *BigNumber) {
+	if e.maxBigNumMagnitude > 0 && bn.Significand != nil {
+		magLen := len(bn.Significand.Bytes())
+		if magLen > e.maxBigNumMagnitude {
+			e.error(&MaxBigNumberMagnitudeError{
+				Length: magLen,
+				Max:    e.maxBigNumMagnitude,
+				Offset: int64(e.Len()),
+			})
+		}
+	}
+	if e.maxBigNumExponent > 0 && bn.Exponent != nil && bn.Exponent.IsInt64() {
+		exp := bn.Exponent.Int64()
+		if exp < 0 {
+			exp = -exp
+		}
+		if exp > int64(e.maxBigNumExponent) {
+			e.error(&MaxBigNumberExponentError{
+				Exponent: bn.Exponent.Int64(),
+				Max:      e.maxBigNumExponent,
+				Offset:   int64(e.Len()),
+			})
+		}
+	}
+	if e.maxBigNumExponent > 0 && bn.Exponent != nil && !bn.Exponent.IsInt64() {
+		e.error(&MaxBigNumberExponentError{
+			Exponent: 0,
+			Max:      e.maxBigNumExponent,
+			Offset:   int64(e.Len()),
+		})
+	}
+}
+
 func bigIntEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 	if v.IsNil() {
 		e.WriteByte(typeNull)
@@ -463,6 +504,7 @@ func bigIntEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		return
 	}
 	bn := bigIntToBigNumber(bi)
+	e.checkBigNumberLimits(bn)
 	n := encodeBigNumber(e.scratch[:], bn)
 	e.Write(e.scratch[:n])
 }
@@ -505,6 +547,7 @@ func bigFloatEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		}
 	}
 	bn := bigFloatToBigNumber(bf)
+	e.checkBigNumberLimits(bn)
 	n := encodeBigNumber(e.scratch[:], bn)
 	e.Write(e.scratch[:n])
 }
